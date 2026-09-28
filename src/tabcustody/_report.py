@@ -23,7 +23,11 @@ HINTS = (
     ),
     (
         "tabpfn.",
-        f"TabPFN has no option to save a fitted model without its training rows: {_KEEP_CONFIDENTIAL}",
+        (
+            "TabPFN keeps the rows in its default fit mode. Releases that include PriorLabs/TabPFN "
+            "pull request 1323 drop them once the caches are built when the model is fitted with "
+            f"fit_mode='fit_with_cache'; otherwise {_KEEP_CONFIDENTIAL}"
+        ),
     ),
     ("tabdpt.", f"TabDPT has no save function and keeps its training rows: {_KEEP_CONFIDENTIAL}"),
     ("sklearn.neighbors.", _INSTANCE_BASED),
