@@ -1,0 +1,11 @@
+# planning artifacts (local only)
+ai/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+.pytest_cache/
+.ruff_cache/
