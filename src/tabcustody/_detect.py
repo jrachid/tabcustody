@@ -34,6 +34,67 @@ def _is_numeric(value: Any, ndim: int) -> bool:
     return isinstance(value, np.ndarray) and value.ndim == ndim and value.dtype.kind in "iuf"
 
 
+_FRAMES = frozenset({"pandas.DataFrame", "pandas.core.frame.DataFrame"})
+_SERIES = frozenset({"pandas.Series", "pandas.core.series.Series"})
+
+
+def _manager(node: Shell) -> Any:
+    return node.attributes.get("_mgr", node.attributes.get("_data"))
+
+
+def _placement(locations: Any, count: int) -> list[int] | None:
+    if isinstance(locations, slice):
+        columns = list(range(locations.start or 0, locations.stop, locations.step or 1))
+    elif _is_numeric(locations, 1):
+        columns = [int(column) for column in locations]
+    else:
+        return None
+    return columns if len(columns) == count else None
+
+
+def _blocks(manager: Any) -> list[tuple[np.ndarray, Any]]:
+    """Pairs each block of a pickled pandas BlockManager with the columns it holds, for pandas 1 to 3 layouts."""
+    blocks: dict[int, tuple[np.ndarray, Any]] = {}
+    for _, node in _walk(manager):
+        if isinstance(node, Shell) and node.name.endswith("_unpickle_block") and node.args:
+            values, locations = node.args[0], node.args[1] if len(node.args) > 1 else None
+        elif isinstance(node, dict) and "values" in node and "mgr_locs" in node:
+            values, locations = node["values"], node["mgr_locs"]
+        else:
+            continue
+        if isinstance(values, np.ndarray):
+            blocks[id(values)] = (values, locations)
+    return list(blocks.values())
+
+
+def as_table(node: Any) -> np.ndarray | None:
+    """Returns `node` as a 2-D numeric array: a NumPy array as is, a pickled pandas DataFrame rebuilt from its numeric blocks."""
+    if _is_numeric(node, 2):
+        return node  # type: ignore[no-any-return]
+    if not (isinstance(node, Shell) and node.name in _FRAMES):
+        return None
+    columns: dict[int, np.ndarray] = {}
+    for values, locations in _blocks(_manager(node)):
+        if not _is_numeric(values, 2):
+            continue
+        placement = _placement(locations, values.shape[0])
+        if placement is None:
+            return None
+        columns.update(zip(placement, values, strict=True))
+    if not columns or len({column.shape[0] for column in columns.values()}) != 1:
+        return None
+    return np.column_stack([columns[index] for index in sorted(columns)])
+
+
+def as_vector(node: Any) -> np.ndarray | None:
+    """Returns `node` as a 1-D numeric array: a NumPy array as is, a pickled pandas Series by its values."""
+    if _is_numeric(node, 1):
+        return node  # type: ignore[no-any-return]
+    if not (isinstance(node, Shell) and node.name in _SERIES):
+        return None
+    return next((values for _, values in _walk(_manager(node)) if _is_numeric(values, 1)), None)
+
+
 def _is_lookup_grid(array: np.ndarray) -> bool:
     """Tells a lookup table, such as QuantileTransformer's quantiles_, where every column is sorted, from rows of data."""
     return array.shape[0] > 1 and bool(np.all(np.diff(array, axis=0) >= 0))
@@ -123,19 +184,22 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
     arrays: dict[str, np.ndarray] = {}
     scalers: list[tuple[str, Shell]] = []
     for path, node in _walk(tree):
-        if _is_numeric(node, 2):
-            arrays[_clean(path)] = node
+        table = as_table(node)
+        if table is not None:
+            arrays[_clean(path)] = table
         if scaler_kind(node) is not None:
             scalers.append((_clean(path), node))
         siblings = _named_children(node)
-        for name, value in siblings:
-            if not _is_numeric(value, 2) or value.shape[0] < min_rows or _is_lookup_grid(value):
+        for name, child in siblings:
+            value = as_table(child)
+            if value is None or value.shape[0] < min_rows or _is_lookup_grid(value):
                 continue
             companion = next(
                 (
                     other
                     for other, candidate in siblings
-                    if _is_numeric(candidate, 1) and len(candidate) == value.shape[0]
+                    if (vector := as_vector(candidate)) is not None
+                    and len(vector) == value.shape[0]
                 ),
                 None,
             )

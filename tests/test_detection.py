@@ -1,8 +1,9 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from tabcustody._detect import find_tables
+from tabcustody._detect import as_table, find_tables
 from tabcustody._reader import read
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -95,3 +96,23 @@ def test_a_quantile_grid_beside_its_levels_is_not_a_table():
 
     assert transformer.attributes["quantiles_"].shape == (100, 3)
     assert find_tables(tree) == []
+
+
+@pytest.mark.parametrize("pandas", ["pandas2", "pandas3"])
+def test_a_table_kept_as_a_pandas_dataframe_is_found(pandas):
+    found = {finding.path: finding for finding in findings(f"frame-{pandas}")}
+
+    assert found["X_train"].shape == (ROWS, 3)
+    assert found["X_train"].companion == "y_train"
+
+
+@pytest.mark.parametrize("pandas", ["pandas2", "pandas3"])
+def test_a_dataframe_is_rebuilt_column_by_column_in_its_own_order(pandas):
+    import sys
+
+    sys.path.insert(0, str(FIXTURES))
+    from customers import customers
+
+    tree = read(FIXTURES / f"frame-{pandas}.pkl")
+
+    np.testing.assert_array_equal(as_table(tree.attributes["X_train"]), customers()[0])
