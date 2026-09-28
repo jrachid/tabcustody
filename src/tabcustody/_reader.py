@@ -153,4 +153,5 @@ def read_bytes(data: bytes) -> Any:
 
 def read(path: str | Path) -> Any:
     """Returns the object tree of the pickle at `path`; nothing the file names is imported or called, NumPy array builders aside."""
-    return read_bytes(Path(path).read_bytes())
+    with Path(path).open("rb") as stream:
+        return _Unpickler(stream).load()
