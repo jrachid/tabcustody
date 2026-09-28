@@ -12,3 +12,6 @@ dist/
 
 # agent instructions (local only)
 CLAUDE.md
+
+# ephemeral viz pages
+.tmp/
