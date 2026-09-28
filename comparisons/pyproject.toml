@@ -4,6 +4,7 @@ version = "0"
 description = "Scripts behind every measured claim in the tabcustody README"
 requires-python = ">=3.12"
 dependencies = [
+    "lightgbm==4.7.0",
     "numpy==2.5.3",
     "pandas==3.0.6",
     "sacroml==2.0.1",
