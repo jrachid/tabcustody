@@ -1,0 +1,52 @@
+{
+  "tabicl": {
+    "library": "tabicl",
+    "version": "2.2.0",
+    "numpy": "2.5.3"
+  },
+  "kneighbors": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "svc": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "xgboost": {
+    "library": "xgboost",
+    "version": "3.4.1",
+    "numpy": "2.5.3"
+  },
+  "lightgbm": {
+    "library": "lightgbm",
+    "version": "4.7.0",
+    "numpy": "2.5.3"
+  },
+  "logistic-regression": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "random-forest": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "gradient-boosting": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "mlp": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "quantile-pipeline": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  }
+}

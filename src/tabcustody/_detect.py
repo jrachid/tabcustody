@@ -1,0 +1,114 @@
+"""Finds training tables in an object tree built by the reader, without being given the training data."""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+
+from tabcustody._reader import Shell
+
+TRAINING_NAMES = frozenset(
+    {"X_train", "X_", "_fit_X", "X_fit_", "support_vectors_", "X_transformed_"}
+)
+
+
+@dataclass(frozen=True)
+class Finding:
+    """A 2-D numeric array judged to hold training rows; `companion` is the 1-D array with one entry per row, if any."""
+
+    path: str
+    shape: tuple[int, ...]
+    companion: str | None
+    evidence: tuple[str, ...]
+
+
+def _is_numeric(value: Any, ndim: int) -> bool:
+    return isinstance(value, np.ndarray) and value.ndim == ndim and value.dtype.kind in "iuf"
+
+
+def _is_lookup_grid(array: np.ndarray) -> bool:
+    """Tells a lookup table, such as QuantileTransformer's quantiles_, where every column is sorted, from rows of data."""
+    return array.shape[0] > 1 and bool(np.all(np.diff(array, axis=0) >= 0))
+
+
+def _named_children(node: Any) -> list[tuple[str, Any]]:
+    if isinstance(node, Shell):
+        return [(f".{key}", value) for key, value in node.attributes.items()] + [
+            (f"[{key!r}]", value) for key, value in node.entries.items()
+        ]
+    if isinstance(node, dict):
+        return [(f"[{key!r}]", value) for key, value in node.items()]
+    return []
+
+
+def _positional_children(node: Any) -> list[tuple[str, Any]]:
+    if isinstance(node, Shell):
+        children = [(f"[{index}]", value) for index, value in enumerate(node.items)]
+        children += [(f"<arg{index}>", value) for index, value in enumerate(node.args)]
+        if node.state is not None:
+            children.append(("<state>", node.state))
+        return children
+    if isinstance(node, list | tuple | set | frozenset):
+        return [(f"[{index}]", value) for index, value in enumerate(node)]
+    if isinstance(node, np.ndarray) and node.dtype.kind == "O":
+        return [(f"[{index}]", value) for index, value in enumerate(node.ravel())]
+    return []
+
+
+def _walk(root: Any) -> Iterator[tuple[str, Any]]:
+    seen: set[int] = set()
+    stack: list[tuple[str, Any]] = [("", root)]
+    while stack:
+        path, node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        yield path, node
+        children = _named_children(node) + _positional_children(node)
+        stack.extend((path + suffix, child) for suffix, child in reversed(children))
+
+
+def _clean(path: str) -> str:
+    return path.removeprefix(".")
+
+
+def find_tables(tree: Any, min_rows: int = 20) -> list[Finding]:
+    """Returns the training tables in `tree`: 2-D numeric arrays beside a 1-D array of the same length, then their copies."""
+    tables: list[Finding] = []
+    arrays: list[tuple[str, np.ndarray]] = []
+    for path, node in _walk(tree):
+        if _is_numeric(node, 2):
+            arrays.append((_clean(path), node))
+        siblings = _named_children(node)
+        for name, value in siblings:
+            if not _is_numeric(value, 2) or value.shape[0] < min_rows or _is_lookup_grid(value):
+                continue
+            companion = next(
+                (
+                    other
+                    for other, candidate in siblings
+                    if _is_numeric(candidate, 1) and len(candidate) == value.shape[0]
+                ),
+                None,
+            )
+            if companion is None:
+                continue
+            evidence = [f"the 1-D array {_clean(path + companion)} has one entry per row"]
+            if name.lstrip(".") in TRAINING_NAMES:
+                evidence.append(f"{name.lstrip('.')} is a name libraries use for training rows")
+            tables.append(
+                Finding(_clean(path + name), value.shape, _clean(path + companion), tuple(evidence))
+            )
+
+    confirmed = {finding.path: finding.shape[0] for finding in tables}
+    for path, array in arrays:
+        if path in confirmed:
+            continue
+        source = next((other for other, rows in confirmed.items() if rows == array.shape[0]), None)
+        if source is not None:
+            copy_evidence = (f"it has as many rows as the training table {source}",)
+            tables.append(Finding(path, array.shape, None, copy_evidence))
+    return tables
