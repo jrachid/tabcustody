@@ -1,5 +1,7 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
+  "url": "https://context7.com/jrachid/tabcustody",
+  "public_key": "pk_selBskjkuL6wMwRQ1GBDF",
   "projectTitle": "tabcustody",
   "description": "Tell whether a saved TabPFN, TabICL or TabDPT model file carries its training data, without running the file",
   "folders": [],
