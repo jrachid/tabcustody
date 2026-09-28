@@ -9,3 +9,6 @@ __pycache__/
 dist/
 .pytest_cache/
 .ruff_cache/
+
+# agent instructions (local only)
+CLAUDE.md
