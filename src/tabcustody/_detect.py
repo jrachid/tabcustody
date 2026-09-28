@@ -26,6 +26,8 @@ class Finding:
     companion: str | None
     evidence: tuple[str, ...]
     reversible_by: str | None = None
+    owner: str | None = None
+    hint: str | None = None
 
 
 def _is_numeric(value: Any, ndim: int) -> bool:
@@ -97,22 +99,26 @@ def _attach_scalers(
 ) -> list[Finding]:
     attached = []
     for finding in tables:
-        fitting = [
-            (path, scaler) for path, scaler in scalers if produced(arrays[finding.path], scaler)
+        feeding = [
+            (path, scaler)
+            for path, scaler in scalers
+            if _feeds(path, finding.path) and produced(arrays[finding.path], scaler)
         ]
-        if not fitting:
+        if len(feeding) != 1:
             attached.append(finding)
             continue
-        path, scaler = max(
-            fitting, key=lambda candidate: _shared_prefix(candidate[0], finding.path)
-        )
+        path, scaler = feeding[0]
         note = f"its columns carry the fingerprint of the {scaler_kind(scaler)} at {path}, which reverses it"
         attached.append(replace(finding, reversible_by=path, evidence=(*finding.evidence, note)))
     return attached
 
 
-def find_tables(tree: Any, min_rows: int = 20) -> list[Finding]:
+def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding]:
     """Returns the training tables in `tree`: 2-D numeric arrays beside a 1-D array of the same length, then their copies."""
+
+    def _clean(path: str) -> str:
+        return prefix + path.removeprefix(".")
+
     tables: list[Finding] = []
     arrays: dict[str, np.ndarray] = {}
     scalers: list[tuple[str, Shell]] = []
@@ -138,8 +144,15 @@ def find_tables(tree: Any, min_rows: int = 20) -> list[Finding]:
             evidence = [f"the 1-D array {_clean(path + companion)} has one entry per row"]
             if name.lstrip(".") in TRAINING_NAMES:
                 evidence.append(f"{name.lstrip('.')} is a name libraries use for training rows")
+            owner = node.name if isinstance(node, Shell) else None
             tables.append(
-                Finding(_clean(path + name), value.shape, _clean(path + companion), tuple(evidence))
+                Finding(
+                    _clean(path + name),
+                    value.shape,
+                    _clean(path + companion),
+                    tuple(evidence),
+                    owner=owner,
+                )
             )
 
     confirmed = {finding.path: finding.shape[0] for finding in tables}

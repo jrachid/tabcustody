@@ -21,7 +21,10 @@ def node(tree, path):
             continue
         if part.startswith("["):
             key = part[1:-1]
-            tree = tree[int(key)] if key.isdigit() else tree.entries.get(key.strip("'"), None)
+            if key.isdigit():
+                tree = tree[int(key)]
+            else:
+                tree = (tree if isinstance(tree, dict) else tree.entries)[key.strip("'")]
         else:
             tree = tree.attributes[part]
     return tree
@@ -62,3 +65,11 @@ def test_a_table_stored_as_is_is_not_said_to_be_reversible(name):
 
     assert primary
     assert all(finding.reversible_by is None for finding in primary)
+
+
+def test_a_scaler_nested_inside_another_transformer_is_not_credited():
+    tree = read(FIXTURES / "tabicl.pkl")
+    power = node(tree, "ensemble_generator_.preprocessors_['power']")
+
+    assert power.attributes["normalizer_"].attributes["_scaler"].name.endswith("StandardScaler")
+    assert all(finding.reversible_by is None for finding in find_tables(tree))

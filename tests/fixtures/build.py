@@ -115,6 +115,22 @@ SMALL = {
 BIG = {"tabpfn-v2": "tabpfn", "tabpfn-v3.5": "tabpfn", "tabdpt": "tabdpt"}
 
 
+def _joblib(compress: int):
+    def write(model, path: Path) -> None:
+        import joblib
+
+        joblib.dump(model, path, compress=compress)
+
+    return write
+
+
+SAVES = {
+    "kneighbors.joblib": ("kneighbors", _joblib(0)),
+    "kneighbors.zlib.joblib": ("kneighbors", _joblib(3)),
+    "tabpfn-v2.tabpfn_fit": ("tabpfn-v2", lambda model, path: model.save_fit_state(path)),
+}
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--one":
         name = sys.argv[2]
@@ -122,10 +138,17 @@ if __name__ == "__main__":
         target.parent.mkdir(exist_ok=True)
         target.write_bytes(pickle.dumps(build(name)))
         sys.exit()
+    if len(sys.argv) == 3 and sys.argv[1] == "--save":
+        model_name, write = SAVES[sys.argv[2]]
+        write(build(model_name), HERE / sys.argv[2])
+        sys.exit()
     wanted = {**SMALL, **(BIG if "--large" in sys.argv else {})}
     # One process per model: on macOS, fitting XGBoost and a PyTorch model in the same process segfaults.
     for name in wanted:
         subprocess.run([sys.executable, __file__, "--one", name], check=True)
+        print(f"wrote {name}")
+    for name in SAVES:
+        subprocess.run([sys.executable, __file__, "--save", name], check=True)
         print(f"wrote {name}")
     manifest = {
         name: {"library": lib, "version": version(lib), "numpy": version("numpy")}
