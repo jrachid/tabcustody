@@ -48,5 +48,20 @@
     "library": "scikit-learn",
     "version": "1.9.1",
     "numpy": "2.5.3"
+  },
+  "standard-kneighbors": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "minmax-kneighbors": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "robust-kneighbors": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
   }
 }

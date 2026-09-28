@@ -1,4 +1,4 @@
-"""Writes the reference model files the test suite scans, from the 300 synthetic customers of comparisons/leak.py.
+"""Writes the reference model files the test suite scans, fitted on the 300 synthetic customers of customers.py.
 
 Run with the comparisons environment: `~/.venvs/tabcustody-comparisons/bin/python tests/fixtures/build.py [--large]`."""
 
@@ -10,26 +10,20 @@ import warnings
 from importlib.metadata import version
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
+from customers import COLUMNS
+from customers import customers as customer_arrays
 
 warnings.filterwarnings("ignore")
 
 HERE = Path(__file__).parent
 LARGE = HERE / "large"
-ROWS = 300
 
 
 def customers() -> tuple[pd.DataFrame, pd.Series]:
-    rng = np.random.default_rng(0)
-    frame = pd.DataFrame(
-        {
-            "age": rng.integers(20, 70, ROWS),
-            "income": rng.normal(40000, 12000, ROWS).round(2),
-            "debt": rng.normal(8000, 3000, ROWS).round(2),
-        }
-    )
-    return frame, (frame["debt"] / frame["income"] > 0.2).astype(int)
+    rows, target = customer_arrays()
+    frame = pd.DataFrame(rows, columns=list(COLUMNS)).astype({"age": int})
+    return frame, pd.Series(target)
 
 
 def build(name: str):
@@ -87,6 +81,15 @@ def build(name: str):
         from sklearn.preprocessing import QuantileTransformer
 
         return make_pipeline(QuantileTransformer(n_quantiles=100), LogisticRegression()).fit(X, y)
+    if name in ("standard-kneighbors", "minmax-kneighbors", "robust-kneighbors"):
+        from sklearn.neighbors import KNeighborsClassifier
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import MinMaxScaler, RobustScaler, StandardScaler
+
+        scaler = {"standard": StandardScaler, "minmax": MinMaxScaler, "robust": RobustScaler}[
+            name.split("-")[0]
+        ]
+        return make_pipeline(scaler(), KNeighborsClassifier()).fit(X, y)
     if name == "mlp":
         from sklearn.neural_network import MLPClassifier
 
@@ -105,6 +108,9 @@ SMALL = {
     "gradient-boosting": "scikit-learn",
     "mlp": "scikit-learn",
     "quantile-pipeline": "scikit-learn",
+    "standard-kneighbors": "scikit-learn",
+    "minmax-kneighbors": "scikit-learn",
+    "robust-kneighbors": "scikit-learn",
 }
 BIG = {"tabpfn-v2": "tabpfn", "tabpfn-v3.5": "tabpfn", "tabdpt": "tabdpt"}
 

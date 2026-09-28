@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
 
 from tabcustody._reader import Shell
+from tabcustody._reverse import produced, scaler_kind
 
 TRAINING_NAMES = frozenset(
     {"X_train", "X_", "_fit_X", "X_fit_", "support_vectors_", "X_transformed_"}
@@ -23,6 +25,7 @@ class Finding:
     shape: tuple[int, ...]
     companion: str | None
     evidence: tuple[str, ...]
+    reversible_by: str | None = None
 
 
 def _is_numeric(value: Any, ndim: int) -> bool:
@@ -75,13 +78,39 @@ def _clean(path: str) -> str:
     return path.removeprefix(".")
 
 
+def _shared_prefix(a: str, b: str) -> int:
+    return len(os.path.commonprefix([a, b]))
+
+
+def _attach_scalers(
+    tables: list[Finding], arrays: dict[str, np.ndarray], scalers: list[tuple[str, Shell]]
+) -> list[Finding]:
+    attached = []
+    for finding in tables:
+        fitting = [
+            (path, scaler) for path, scaler in scalers if produced(arrays[finding.path], scaler)
+        ]
+        if not fitting:
+            attached.append(finding)
+            continue
+        path, scaler = max(
+            fitting, key=lambda candidate: _shared_prefix(candidate[0], finding.path)
+        )
+        note = f"its columns carry the fingerprint of the {scaler_kind(scaler)} at {path}, which reverses it"
+        attached.append(replace(finding, reversible_by=path, evidence=(*finding.evidence, note)))
+    return attached
+
+
 def find_tables(tree: Any, min_rows: int = 20) -> list[Finding]:
     """Returns the training tables in `tree`: 2-D numeric arrays beside a 1-D array of the same length, then their copies."""
     tables: list[Finding] = []
-    arrays: list[tuple[str, np.ndarray]] = []
+    arrays: dict[str, np.ndarray] = {}
+    scalers: list[tuple[str, Shell]] = []
     for path, node in _walk(tree):
         if _is_numeric(node, 2):
-            arrays.append((_clean(path), node))
+            arrays[_clean(path)] = node
+        if scaler_kind(node) is not None:
+            scalers.append((_clean(path), node))
         siblings = _named_children(node)
         for name, value in siblings:
             if not _is_numeric(value, 2) or value.shape[0] < min_rows or _is_lookup_grid(value):
@@ -104,11 +133,11 @@ def find_tables(tree: Any, min_rows: int = 20) -> list[Finding]:
             )
 
     confirmed = {finding.path: finding.shape[0] for finding in tables}
-    for path, array in arrays:
+    for path, array in arrays.items():
         if path in confirmed:
             continue
         source = next((other for other, rows in confirmed.items() if rows == array.shape[0]), None)
         if source is not None:
             copy_evidence = (f"it has as many rows as the training table {source}",)
             tables.append(Finding(path, array.shape, None, copy_evidence))
-    return tables
+    return _attach_scalers(tables, arrays, scalers)
