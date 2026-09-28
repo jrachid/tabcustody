@@ -24,6 +24,25 @@ TabDPT is the instructive row. It stores the table standardised — an income of
 
 Nothing here is a bug in these libraries: keeping the table is how in-context learning works. The risk is in the habits around model files. Teams have treated them as harmless build artefacts for a decade — committed to Git, copied to buckets, sent to vendors — and with these models each of those copies is a copy of the customer table.
 
+## What existing tools see
+
+The closest prior work is [SACRO-ML](https://github.com/AI-SDC/SACRO-ML), which checks models leaving trusted research environments. Its instance-based attack detects models that store their training rows — SVMs and k-nearest-neighbours, the classic cases — by comparing the stored instances with the training data you give it. On its own ground it works, and on anything else it reports no risk:
+
+| Model | SACRO-ML 2.0.1 verdict | Rows it matched |
+|---|---|---|
+| KNeighborsClassifier (scikit-learn 1.9.1) | leakage confirmed | 300 / 300 |
+| TabICL 2.2.0 | not instance-based, no data leakage risk | 0 / 300 |
+
+Same 300 customers as above, measured by [`comparisons/sacroml_check.py`](comparisons/sacroml_check.py). The TabICL file it clears is one from which every income is rebuilt.
+
+Other tools look at model files for a different reason, or skip them:
+
+- **Pickle security scanners** — [fickling](https://github.com/trailofbits/fickling), [picklescan](https://github.com/mmaitre314/picklescan), [modelscan](https://github.com/protectai/modelscan), the [Hugging Face pickle scan](https://huggingface.co/docs/hub/security-pickle) — look for code that runs when the file loads. Arrays are data, so they are not their concern.
+- **Model auditors** — [ModelAudit](https://github.com/promptfoo/modelaudit) also searches weights for embedded credentials such as API keys, not for rows of a dataset.
+- **Cloud data-loss prevention** — [Amazon Macie](https://docs.aws.amazon.com/macie/latest/user/discovery-supported-storage.html) classifies pickle and NumPy files as objects it cannot analyse, so personal data inside them goes unreported.
+
+tabcustody is meant to discover the table without being handed the training data, to cover the in-context tabular models, and to rebuild values stored behind a reversible transform, as with TabDPT.
+
 ## What tabcustody will do
 
 1. **Detect.** Tell whether a model file carries training data, including data stored transformed next to the object that can reverse it.
