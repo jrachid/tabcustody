@@ -4,6 +4,7 @@ Run with `uv run python leak.py [xgboost tabicl tabpfn-v2 tabpfn tabdpt]`; the o
 
 import pickle
 import struct
+import subprocess
 import sys
 import warnings
 from importlib.metadata import version
@@ -95,10 +96,13 @@ MODELS = {
 }
 
 if __name__ == "__main__":
-    chosen = sys.argv[1:] or list(MODELS)
+    if len(sys.argv) == 2:
+        label, build = MODELS[sys.argv[1]]
+        report(label, build())
+        sys.exit()
     print("versions:", ", ".join(f"{p} {version(p)}" for p in ("xgboost", "tabicl", "tabpfn", "tabdpt", "torch")))
     print("| Model | Saved file | Incomes found verbatim | Incomes rebuilt from the file alone |")
     print("|---|---|---|---|")
-    for key in chosen:
-        label, build = MODELS[key]
-        report(label, build())
+    # One process per model: on macOS, fitting XGBoost and a PyTorch model in the same process segfaults.
+    for key in sys.argv[1:] or list(MODELS):
+        subprocess.run([sys.executable, __file__, key], check=True)
