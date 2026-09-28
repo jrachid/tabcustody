@@ -18,3 +18,6 @@ CLAUDE.md
 
 # reference files too large to version (integration suite)
 tests/fixtures/large/
+
+# macOS
+.DS_Store
