@@ -2,7 +2,55 @@
 
 > With in-context tabular models, the model file **is** your training data. tabcustody proves it on your files, then lets you deploy, erase and trace without exposing that data.
 
-**Status: pre-alpha — there is nothing to install yet.** This README states the problem, measured. The library comes next, starting with the scanner.
+**Status: pre-alpha.** Version 0.1 ships the scanner: it tells whether a model file carries its training data, without running the file. Separating, erasing and tracing come next.
+
+## Quick start
+
+```bash
+pip install tabcustody
+tabcustody scan model.pkl other.joblib fitted.tabpfn_fit
+```
+
+The command reads pickle files, joblib files (plain or compressed with zlib, gzip, bz2 or xz) and zip archives of them such as TabPFN's `.tabpfn_fit`. It exits with 1 when a file carries training data, 2 when a file cannot be read, 0 otherwise, so it can gate a CI job; `--json` prints one report per file.
+
+From Python, with scikit-learn installed:
+
+```python
+import pickle
+
+from sklearn.datasets import make_classification
+from sklearn.neighbors import KNeighborsClassifier
+
+from tabcustody import scan_file
+
+X, y = make_classification(n_samples=200, n_features=4, random_state=0)
+with open("model.pkl", "wb") as file:
+    pickle.dump(KNeighborsClassifier().fit(X, y), file)
+
+report = scan_file("model.pkl")
+print(report.to_text())
+assert report.carries_training_data
+```
+
+```
+model.pkl (pickle)
+  training table  _fit_X  200 rows x 4 columns
+    why: the 1-D array _y has one entry per row
+    why: _fit_X is a name libraries use for training rows
+    fix: An instance-based model keeps training rows by design: keep this file as confidential as the data it was fitted on.
+```
+
+On a TabPFN archive the report names the rows of every ensemble member, and on a TabICL file it names the save option that leaves them out:
+
+```
+fitted.tabpfn_fit (zip)
+  training table  executor_state.joblib:ensemble_members[*].X_train  300 rows x 10 or 4 columns  (8 alike)
+    why: the 1-D array executor_state.joblib:ensemble_members[*].y_train has one entry per row
+    why: X_train is a name libraries use for training rows
+    fix: TabPFN keeps the rows in its default fit mode. Releases that include PriorLabs/TabPFN pull request 1323 drop them once the caches are built when the model is fitted with fit_mode='fit_with_cache'; otherwise keep this file as confidential as the data it was fitted on.
+```
+
+The scanner never unpickles the file the usual way: only NumPy arrays and plain containers are rebuilt, every other class becomes an inert placeholder, and no library the file names is imported. The report gives paths, shapes and evidence, never a value of the table.
 
 ## The problem, measured
 
@@ -36,7 +84,7 @@ The table above uses `pickle`. Each library's own save function tells the same s
 
 Measured by [`comparisons/builtin_saves.py`](comparisons/builtin_saves.py).
 
-TabICL's documentation presents `save_training_data=False` as giving "better data privacy": the file keeps the model's cached key-value projections of the table instead of the table, and predictions after reload are unchanged. It works only if the model was fitted with `kv_cache=True`, it is off by default, 4 incomes still appear verbatim, and whether the table can be rebuilt from the cache has not been measured here. TabPFN's `.tabpfn_fit` archive leaves out the foundation model's weights but keeps the table; neither TabPFN nor TabDPT offers an option to drop it.
+TabICL's documentation presents `save_training_data=False` as giving "better data privacy": the file keeps the model's cached key-value projections of the table instead of the table, and predictions after reload are unchanged. It works only if the model was fitted with `kv_cache=True`, it is off by default, 4 incomes still appear verbatim, and whether the table can be rebuilt from the cache has not been measured here. TabPFN's `.tabpfn_fit` archive leaves out the foundation model's weights but keeps the table, and TabDPT offers no option to drop it. TabPFN is about to follow TabICL: [pull request 1323](https://github.com/PriorLabs/TabPFN/pull/1323), merged on 28 September 2026 for memory reasons and not yet released, drops each ensemble member's table once its cache is built in `fit_mode="fit_with_cache"`. Measured on TabPFN's main branch at commit `dbba40314b`, with TabPFN v2 weights: the default mode keeps 300 of 300 incomes in the `.tabpfn_fit` archive, `fit_with_cache` keeps 4, and predictions after reload are unchanged in both.
 
 ## What existing tools see
 
@@ -55,16 +103,41 @@ Other tools look at model files for a different reason, or skip them:
 - **Model auditors** — [ModelAudit](https://github.com/promptfoo/modelaudit) also searches weights for embedded credentials such as API keys, not for rows of a dataset.
 - **Cloud data-loss prevention** — [Amazon Macie](https://docs.aws.amazon.com/macie/latest/user/discovery-supported-storage.html) classifies pickle and NumPy files as objects it cannot analyse, so personal data inside them goes unreported.
 
-tabcustody is meant to discover the table without being handed the training data, to cover the in-context tabular models, and to rebuild values stored behind a reversible transform, as with TabDPT.
+tabcustody discovers the table without being handed the training data, covers the in-context tabular models, and tells when values stored behind a scaler can be rebuilt, as with TabDPT.
 
-## What tabcustody will do
+## Guarantees and the tests that prove them
 
-1. **Detect.** Tell whether a model file carries training data, including data stored transformed next to the object that can reverse it, and name the fix each library offers when there is one.
+| Guarantee | Test |
+|---|---|
+| Reading a file runs none of its code, joblib object arrays included | `test_safety.py::test_a_pickle_that_runs_a_command_on_load_runs_nothing`, `test_formats.py::test_an_object_array_inside_a_joblib_file_is_read_without_running_it` |
+| Scanning imports no model library | `test_safety.py::test_scanning_imports_neither_torch_nor_xgboost` |
+| The training table of TabICL, TabPFN v2, TabPFN v3.5 and TabDPT is found | `test_detection.py::test_the_training_table_of_each_in_context_model_is_found` (TabPFN and TabDPT files are too large to version: marked `integration`), `test_formats.py::test_a_tabpfn_fit_archive_is_scanned_member_by_member` |
+| Instance-based models (k-nearest-neighbours, SVM) are reported | `test_detection.py::test_instance_based_models_are_reported_like_sacroml_does` |
+| No finding on XGBoost, LightGBM, logistic regression, random forest, gradient boosting, a 100×100 MLP or a QuantileTransformer pipeline | `test_detection.py::test_classic_models_report_no_table`, `::test_a_square_weight_matrix_next_to_its_bias_is_not_a_table`, `::test_a_quantile_grid_beside_its_levels_is_not_a_table` |
+| A table kept as a pandas DataFrame, pickled by pandas 2 or 3, is found and rebuilt in its column order | `test_detection.py::test_a_table_kept_as_a_pandas_dataframe_is_found`, `::test_a_dataframe_is_rebuilt_column_by_column_in_its_own_order` |
+| A table stored standardised is declared reversible, and reversing gives the exact rows | `test_reversal.py::test_a_standardised_table_is_rebuilt_from_the_scaler_saved_beside_it`, `::test_a_scaled_pipeline_table_is_rebuilt_from_the_scaler_step` |
+| A scaler that does not feed the table is never credited | `test_reversal.py::test_a_scaler_nested_inside_another_transformer_is_not_credited`, `::test_a_table_stored_as_is_is_not_said_to_be_reversible` |
+| The report never prints a value of the table | `test_report.py::test_the_report_never_prints_a_value_of_the_table` |
+| joblib files, compressed or not, read like pickles | `test_formats.py::test_a_joblib_file_is_scanned_like_a_pickle`, `::test_compressed_joblib_files_are_read` |
+| The command exits 1 on a file that carries training data | `test_cli.py::test_the_command_exits_non_zero_when_a_table_is_found` |
+
+## Limits
+
+- **A table is recognised by its target.** The scanner looks for a 2-D numeric array beside a 1-D array with one entry per row. Rows kept without a target, or tables under 20 rows (`--min-rows`), are not reported.
+- **A one-column table stored in sorted order** is taken for a lookup grid, such as QuantileTransformer's quantiles, and not reported.
+- **Only numeric columns are read.** Text and category columns of a DataFrame stay in the file but are not part of the reported shape.
+- **Reversal covers scikit-learn's StandardScaler, MinMaxScaler and RobustScaler**, when the scaler sits beside the table or is the pipeline step right before it. Tables behind other transforms are still reported; they are not called reversible.
+- **Formats.** Not read: lz4-compressed joblib, safetensors, ONNX, `torch.save` archives. PyTorch tensors inside a pickle stay opaque placeholders.
+- **Memory.** The whole object tree is loaded: scanning the 836 MB TabPFN v3.5 pickle peaks at about the size of the file.
+
+## What comes next
+
+1. **Detect** — shipped in 0.1.
 2. **Separate.** Save the model without its table, and supply the table at prediction time from a place you control.
 3. **Erase.** Find a person's rows, remove them, refit, and keep a record that proves it — an erasure request under GDPR article 17 becomes a routine operation with these models, where classic models would need retraining.
 4. **Trace and verify.** Know which exact table was in place for any past prediction, and check that production predicts like development.
 
-Only the first is under way. Each step ships on its own, with its guarantees backed by named tests.
+Each step ships on its own, with its guarantees backed by named tests.
 
 ## What tabcustody does not claim
 
