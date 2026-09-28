@@ -1,0 +1,16 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "tabcustody",
+  "description": "Tell whether a saved TabPFN, TabICL or TabDPT model file carries its training data, without running the file",
+  "folders": [],
+  "excludeFolders": ["tests", "ci", "src", ".github", "comparisons"],
+  "excludeFiles": [],
+  "rules": [
+    "Scan a saved TabPFN, TabICL or TabDPT model file with the tabcustody scan command or the scan_file function before sharing it, because these models keep their training rows inside the file",
+    "The scan never runs the file and never imports the model libraries, so it is safe on model files from unknown sources",
+    "The tabcustody scan command exits with 1 when a file carries training data, 2 when a file cannot be read and 0 otherwise, so a CI job can block a model file",
+    "Use report.carries_training_data and report.findings from scan_file, and print report.to_text or report.to_dict, which never contain a value of the table",
+    "To save a TabICL model without its training rows, fit it with kv_cache set to True and save it with save_training_data set to False",
+    "A table is recognised by the target array stored beside it, so rows kept without a target, or tables under twenty rows, are not reported"
+  ]
+}
