@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import os
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from typing import Any
@@ -74,12 +74,22 @@ def _walk(root: Any) -> Iterator[tuple[str, Any]]:
         stack.extend((path + suffix, child) for suffix, child in reversed(children))
 
 
-def _clean(path: str) -> str:
-    return path.removeprefix(".")
+_PIPELINE_STEP = re.compile(r"^(?P<pipeline>.*)\[(?P<index>\d+)\]\[1\]$")
 
 
-def _shared_prefix(a: str, b: str) -> int:
-    return len(os.path.commonprefix([a, b]))
+def _parent(path: str) -> str:
+    return path[: max(path.rfind("."), path.rfind("["), 0)]
+
+
+def _feeds(scaler_path: str, table_path: str) -> bool:
+    """Tells whether the scaler sits beside the table's owner, or is the pipeline step right before it."""
+    owner = _parent(table_path)
+    if _parent(scaler_path) == owner:
+        return True
+    step = _PIPELINE_STEP.match(owner)
+    if step is None:
+        return False
+    return scaler_path == f"{step['pipeline']}[{int(step['index']) - 1}][1]"
 
 
 def _attach_scalers(
