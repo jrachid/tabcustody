@@ -24,6 +24,20 @@ TabDPT is the instructive row. It stores the table standardised — an income of
 
 Nothing here is a bug in these libraries: keeping the table is how in-context learning works. The risk is in the habits around model files. Teams have treated them as harmless build artefacts for a decade — committed to Git, copied to buckets, sent to vendors — and with these models each of those copies is a copy of the customer table.
 
+## What the libraries' own saves keep
+
+The table above uses `pickle`. Each library's own save function tells the same story by default, and one of them offers a way out:
+
+| Save | Incomes found verbatim | Largest prediction gap after reload |
+|---|---|---|
+| TabPFN v2 `save_fit_state` (tabpfn 9.0.0) | 300 / 300 | n/a |
+| TabICL 2.2.0 `save(save_training_data=True)`, `kv_cache=False` | 300 / 300 | 0 |
+| TabICL 2.2.0 `save(save_training_data=False)`, `kv_cache=True` | 4 / 300 | 0 |
+
+Measured by [`comparisons/builtin_saves.py`](comparisons/builtin_saves.py).
+
+TabICL's documentation presents `save_training_data=False` as giving "better data privacy": the file keeps the model's cached key-value projections of the table instead of the table, and predictions after reload are unchanged. It works only if the model was fitted with `kv_cache=True`, it is off by default, 4 incomes still appear verbatim, and whether the table can be rebuilt from the cache has not been measured here. TabPFN's `.tabpfn_fit` archive leaves out the foundation model's weights but keeps the table; neither TabPFN nor TabDPT offers an option to drop it.
+
 ## What existing tools see
 
 The closest prior work is [SACRO-ML](https://github.com/AI-SDC/SACRO-ML), which checks models leaving trusted research environments. Its instance-based attack detects models that store their training rows — SVMs and k-nearest-neighbours, the classic cases — by comparing the stored instances with the training data you give it. On its own ground it works, and on anything else it reports no risk:
@@ -45,7 +59,7 @@ tabcustody is meant to discover the table without being handed the training data
 
 ## What tabcustody will do
 
-1. **Detect.** Tell whether a model file carries training data, including data stored transformed next to the object that can reverse it.
+1. **Detect.** Tell whether a model file carries training data, including data stored transformed next to the object that can reverse it, and name the fix each library offers when there is one.
 2. **Separate.** Save the model without its table, and supply the table at prediction time from a place you control.
 3. **Erase.** Find a person's rows, remove them, refit, and keep a record that proves it — an erasure request under GDPR article 17 becomes a routine operation with these models, where classic models would need retraining.
 4. **Trace and verify.** Know which exact table was in place for any past prediction, and check that production predicts like development.
