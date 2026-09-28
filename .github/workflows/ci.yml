@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked
+      - run: uv run pytest
+
+  installed-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.13"
+      - run: uv build
+      - name: Install the wheel in a fresh environment
+        run: |
+          uv venv "$RUNNER_TEMP/env"
+          uv pip install --python "$RUNNER_TEMP/env" "tabcustody @ file://$(ls "$PWD"/dist/*.whl)" scikit-learn
+      - name: Run the README quick start as written
+        working-directory: ${{ runner.temp }}
+        run: "$RUNNER_TEMP/env/bin/python $GITHUB_WORKSPACE/ci/run_readme.py $GITHUB_WORKSPACE/README.md"
+      - name: The command exits 1 on a file with training data and 0 on a clean one
+        run: |
+          set +e
+          "$RUNNER_TEMP/env/bin/tabcustody" scan tests/fixtures/tabicl.pkl; test $? -eq 1 || exit 1
+          "$RUNNER_TEMP/env/bin/tabcustody" scan tests/fixtures/xgboost.pkl; test $? -eq 0 || exit 1
