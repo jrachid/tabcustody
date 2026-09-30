@@ -27,8 +27,18 @@ target = (customers["debt"] / customers["income"] > 0.2).astype(int)
 incomes = customers["income"].to_numpy()
 
 
-def verbatim(blob: bytes) -> int:
-    return sum(blob.count(struct.pack("<d", v)) + blob.count(struct.pack("<f", v)) > 0 for v in incomes)
+def verbatim(blob: bytes, values: np.ndarray = incomes) -> int:
+    return sum(struct.pack("<d", v) in blob or struct.pack("<f", v) in blob for v in values)
+
+
+def chance(blob: bytes) -> float:
+    """How many of 300 incomes a large file matches by coincidence, measured on 3,000 values drawn like them but absent from the table."""
+    decoys = np.setdiff1d(np.random.default_rng(1).normal(40000, 12000, 3000).round(2), incomes)
+    return verbatim(blob, decoys) * ROWS / len(decoys)
+
+
+def found(blob: bytes) -> str:
+    return f"{verbatim(blob)} / {ROWS} (chance: {chance(blob):.0f})"
 
 
 def rebuilt(restored) -> int | None:
@@ -48,10 +58,9 @@ def rebuilt(restored) -> int | None:
 def report(name: str, model) -> None:
     blob = pickle.dumps(model)
     restored = pickle.loads(blob)
-    found = verbatim(blob)
     recovered = rebuilt(restored)
-    recovered = found if recovered is None else max(found, recovered)
-    print(f"| {name} | {len(blob) / 1e6:.1f} MB | {found} / {ROWS} | {recovered} / {ROWS} |")
+    recovered = verbatim(blob) if recovered is None else max(verbatim(blob), recovered)
+    print(f"| {name} | {len(blob) / 1e6:.1f} MB | {found(blob)} | {recovered} / {ROWS} |")
 
 
 def xgboost_model():
