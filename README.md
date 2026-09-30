@@ -60,15 +60,17 @@ The same 300 synthetic customers, each model fitted then saved with `pickle`, an
 
 | Model | Saved file | Incomes found verbatim | Incomes rebuilt from the file alone |
 |---|---|---|---|
-| XGBoost 3.4.1 (control) | 0.1 MB | 0 / 300 | 0 / 300 |
-| TabICL 2.2.0 | < 0.1 MB | 300 / 300 | 300 / 300 |
-| TabPFN v2 (tabpfn 9.0.0) | 29.2 MB | 300 / 300 | 300 / 300 |
-| TabPFN v3.5, the default weights (tabpfn 9.0.0) | 876.3 MB | 300 / 300 | 300 / 300 |
-| TabDPT 1.3.1 | 252.5 MB | 11 / 300 | 300 / 300 |
+| XGBoost 3.4.1 (control) | 0.1 MB | 0 / 300 (chance: 0) | 0 / 300 |
+| TabICL 2.2.0 | < 0.1 MB | 300 / 300 (chance: 0) | 300 / 300 |
+| TabPFN v2 (tabpfn 9.0.0) | 29.2 MB | 300 / 300 (chance: 2) | 300 / 300 |
+| TabPFN v3.5, the default weights (tabpfn 9.0.0) | 876.3 MB | 300 / 300 (chance: 21) | 300 / 300 |
+| TabDPT 1.3.1 | 252.5 MB | 11 / 300 (chance: 11) | 300 / 300 |
 
-Measured on 28 September 2026 by [`comparisons/leak.py`](comparisons/leak.py), which anyone can rerun with the pinned versions of [`comparisons/pyproject.toml`](comparisons/pyproject.toml).
+A value is found verbatim when its 8-byte or 4-byte encoding appears in the file. A large file of model weights contains some of those byte patterns by coincidence, so each count comes with the number that 300 values absent from the table reach in the same file.
 
-TabDPT is the instructive row. It stores the table standardised — an income of 38,693.02 becomes -0.058 — so searching the file for known values finds almost nothing, and a manual check concludes the file is clean. But the scaler that standardised the table is saved in the same file, and calling it in reverse rebuilds every income to the cent.
+Measured on 30 September 2026 by [`comparisons/leak.py`](comparisons/leak.py), which anyone can rerun with the pinned versions of [`comparisons/pyproject.toml`](comparisons/pyproject.toml).
+
+TabDPT is the instructive row. It stores the table standardised — an income of 38,693.02 becomes -0.058 — so searching the file for known values finds no more than chance does, and a manual check concludes the file is clean. But the scaler that standardised the table is saved in the same file, and calling it in reverse rebuilds every income to the cent.
 
 Nothing here is a bug in these libraries: keeping the table is how in-context learning works. The risk is in the habits around model files. Teams have treated them as harmless build artefacts for a decade — committed to Git, copied to buckets, sent to vendors — and with these models each of those copies is a copy of the customer table.
 
@@ -78,13 +80,13 @@ The table above uses `pickle`. Each library's own save function tells the same s
 
 | Save | Incomes found verbatim | Largest prediction gap after reload |
 |---|---|---|
-| TabPFN v2 `save_fit_state` (tabpfn 9.0.0) | 300 / 300 | n/a |
-| TabICL 2.2.0 `save(save_training_data=True)`, `kv_cache=False` | 300 / 300 | 0 |
-| TabICL 2.2.0 `save(save_training_data=False)`, `kv_cache=True` | 4 / 300 | 0 |
+| TabPFN v2 `save_fit_state` (tabpfn 9.0.0) | 300 / 300 (chance: 0) | n/a |
+| TabICL 2.2.0 `save(save_training_data=True)`, `kv_cache=False` | 300 / 300 (chance: 0) | 0 |
+| TabICL 2.2.0 `save(save_training_data=False)`, `kv_cache=True` | 4 / 300 (chance: 6) | 0 |
 
 Measured by [`comparisons/builtin_saves.py`](comparisons/builtin_saves.py).
 
-TabICL's documentation presents `save_training_data=False` as giving "better data privacy": the file keeps the model's cached key-value projections of the table instead of the table, and predictions after reload are unchanged. It works only if the model was fitted with `kv_cache=True`, it is off by default, 4 incomes still appear verbatim, and whether the table can be rebuilt from the cache has not been measured here. TabPFN's `.tabpfn_fit` archive leaves out the foundation model's weights but keeps the table, and TabDPT offers no option to drop it. TabPFN is about to follow TabICL: [pull request 1323](https://github.com/PriorLabs/TabPFN/pull/1323), merged on 28 September 2026 for memory reasons and not yet released, drops each ensemble member's table once its cache is built in `fit_mode="fit_with_cache"`. Measured on TabPFN's main branch at commit `dbba40314b`, with TabPFN v2 weights: the default mode keeps 300 of 300 incomes in the `.tabpfn_fit` archive, `fit_with_cache` keeps 4, and predictions after reload are unchanged in both.
+TabICL's documentation presents `save_training_data=False` as giving "better data privacy": the file keeps the model's cached key-value projections of the table instead of the table, and predictions after reload are unchanged. It works only if the model was fitted with `kv_cache=True` and it is off by default. It leaves no income verbatim: the 4 matches are chance, as many as values absent from the table reach, they change from one dataset to the next, and none sits inside an array of the reloaded model. Whether the table can be rebuilt from the cache has not been measured here. TabPFN's `.tabpfn_fit` archive leaves out the foundation model's weights but keeps the table, and TabDPT offers no option to drop it. TabPFN is about to follow TabICL: [pull request 1323](https://github.com/PriorLabs/TabPFN/pull/1323), merged on 28 September 2026 for memory reasons and not yet released, drops each ensemble member's table once its cache is built in `fit_mode="fit_with_cache"`. Measured on TabPFN's main branch at commit `dbba40314b`, with TabPFN v2 weights: the default mode keeps 300 of 300 incomes in the `.tabpfn_fit` archive, and `fit_with_cache` keeps the smallest and the largest value of every column — here the incomes of the poorest and the richest customer — and no other income beyond chance. Predictions after reload are unchanged in both.
 
 ## What existing tools see
 
