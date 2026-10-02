@@ -19,7 +19,7 @@ TRAINING_NAMES = frozenset(
 
 @dataclass(frozen=True)
 class Finding:
-    """A 2-D numeric array judged to hold training rows; `companion` is the 1-D array with one entry per row, if any."""
+    """A 2-D numeric array judged to hold training rows, or a cache built from them; `companion` is the 1-D array with one entry per row, if any."""
 
     path: str
     shape: tuple[int, ...]
@@ -28,6 +28,13 @@ class Finding:
     reversible_by: str | None = None
     owner: str | None = None
     hint: str | None = None
+    cache: bool = False
+
+    @property
+    def kind(self) -> str:
+        if self.cache:
+            return "key-value cache"
+        return "training table" if self.companion else "copy"
 
 
 def _is_numeric(value: Any, ndim: int) -> bool:
@@ -93,6 +100,24 @@ def as_vector(node: Any) -> np.ndarray | None:
     if not (isinstance(node, Shell) and node.name in _SERIES):
         return None
     return next((values for _, values in _walk(_manager(node)) if _is_numeric(values, 1)), None)
+
+
+_TABICL_CACHE = "tabicl._model.kv_cache.TabICLCache"
+
+
+def _cache_shape(node: Any) -> tuple[int, int] | None:
+    """Returns the rows and columns a dict of TabICL caches was built from, as their train_shape records them."""
+    if not isinstance(node, dict) or not node:
+        return None
+    shapes = set()
+    for cache in node.values():
+        if not (isinstance(cache, Shell) and cache.name == _TABICL_CACHE):
+            return None
+        shape = cache.attributes.get("train_shape")
+        if cache.attributes.get("icl_cache") is None or not isinstance(shape, tuple | list):
+            return None
+        shapes.add((int(shape[-2]), int(shape[-1])))
+    return shapes.pop() if len(shapes) == 1 else None
 
 
 def _is_lookup_grid(array: np.ndarray) -> bool:
@@ -175,7 +200,7 @@ def _attach_scalers(
 
 
 def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding]:
-    """Returns the training tables in `tree`: 2-D numeric arrays beside a 1-D array of the same length, then their copies."""
+    """Returns the training tables in `tree`: 2-D numeric arrays beside a 1-D array of the same length, TabICL caches, then copies of the tables."""
 
     def _clean(path: str) -> str:
         return prefix + path.removeprefix(".")
@@ -191,6 +216,19 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
             scalers.append((_clean(path), node))
         siblings = _named_children(node)
         for name, child in siblings:
+            cached = _cache_shape(child)
+            if cached is not None and cached[0] >= min_rows:
+                tables.append(
+                    Finding(
+                        _clean(path + name),
+                        cached,
+                        None,
+                        ("TabICL's in-context cache keeps one key and one value per training row",),
+                        owner=node.name if isinstance(node, Shell) else None,
+                        cache=True,
+                    )
+                )
+                continue
             value = as_table(child)
             if value is None or value.shape[0] < min_rows or _is_lookup_grid(value):
                 continue
@@ -219,7 +257,7 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
                 )
             )
 
-    confirmed = {finding.path: finding.shape[0] for finding in tables}
+    confirmed = {finding.path: finding.shape[0] for finding in tables if not finding.cache}
     for path, array in arrays.items():
         if path in confirmed:
             continue

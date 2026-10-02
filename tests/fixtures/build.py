@@ -32,6 +32,10 @@ def build(name: str):
         from tabicl import TabICLClassifier
 
         return TabICLClassifier(device="cpu").fit(X, y)
+    if name == "tabicl-kv-cache":
+        from tabicl import TabICLClassifier
+
+        return TabICLClassifier(device="cpu", kv_cache=True).fit(X, y)
     if name == "tabpfn-v2":
         from tabpfn import TabPFNClassifier
         from tabpfn.constants import ModelVersion
@@ -128,6 +132,10 @@ SAVES = {
     "kneighbors.joblib": ("kneighbors", _joblib(0)),
     "kneighbors.zlib.joblib": ("kneighbors", _joblib(3)),
     "tabpfn-v2.tabpfn_fit": ("tabpfn-v2", lambda model, path: model.save_fit_state(path)),
+    "large/tabicl-kv-cache.pkl": (
+        "tabicl-kv-cache",
+        lambda model, path: model.save(path, save_training_data=False),
+    ),
 }
 
 
@@ -140,6 +148,7 @@ if __name__ == "__main__":
         sys.exit()
     if len(sys.argv) == 3 and sys.argv[1] == "--save":
         model_name, write = SAVES[sys.argv[2]]
+        (HERE / sys.argv[2]).parent.mkdir(exist_ok=True)
         write(build(model_name), HERE / sys.argv[2])
         sys.exit()
     wanted = {**SMALL, **(BIG if "--large" in sys.argv else {})}
@@ -148,6 +157,8 @@ if __name__ == "__main__":
         subprocess.run([sys.executable, __file__, "--one", name], check=True)
         print(f"wrote {name}")
     for name in SAVES:
+        if name.startswith("large/") and "--large" not in sys.argv:
+            continue
         subprocess.run([sys.executable, __file__, "--save", name], check=True)
         print(f"wrote {name}")
     manifest = {

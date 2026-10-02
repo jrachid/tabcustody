@@ -13,20 +13,27 @@ from tabcustody._reader import UnreadableFileError, read_members
 _KEEP_CONFIDENTIAL = "keep this file as confidential as the data it was fitted on."
 _INSTANCE_BASED = f"An instance-based model keeps training rows by design: {_KEEP_CONFIDENTIAL}"
 
+_TABICL_CACHE = (
+    "TabICL's key-value cache lets the training rows be rebuilt with the library and its public "
+    f"weights: {_KEEP_CONFIDENTIAL}"
+)
+
 HINTS = (
     (
         "tabicl.",
         (
-            "TabICL can save without the rows: fit with kv_cache=True, then call "
-            "save(path, save_training_data=False); the file then keeps the model's key-value cache instead."
+            "TabICL keeps the rows. Its save(path, save_training_data=False) option keeps a "
+            "key-value cache instead, from which the rows can be rebuilt: "
+            f"{_KEEP_CONFIDENTIAL}"
         ),
     ),
     (
         "tabpfn.",
         (
             "TabPFN keeps the rows in its default fit mode. Releases that include PriorLabs/TabPFN "
-            "pull request 1323 drop them once the caches are built when the model is fitted with "
-            f"fit_mode='fit_with_cache'; otherwise {_KEEP_CONFIDENTIAL}"
+            "pull request 1323 drop them in fit_mode='fit_with_cache', but keep a key-value cache "
+            "derived from them and the smallest and largest value of each column: "
+            f"{_KEEP_CONFIDENTIAL}"
         ),
     ),
     ("tabdpt.", f"TabDPT has no save function and keeps its training rows: {_KEEP_CONFIDENTIAL}"),
@@ -35,10 +42,12 @@ HINTS = (
 )
 
 
-def _hint(owner: str | None) -> str | None:
-    if owner is None:
+def _hint(finding: Finding) -> str | None:
+    if finding.cache:
+        return _TABICL_CACHE
+    if finding.owner is None:
         return None
-    return next((hint for prefix, hint in HINTS if owner.startswith(prefix)), None)
+    return next((hint for prefix, hint in HINTS if finding.owner.startswith(prefix)), None)
 
 
 @dataclass(frozen=True)
@@ -65,7 +74,7 @@ class Report:
                     "path": finding.path,
                     "rows": finding.shape[0],
                     "columns": finding.shape[1],
-                    "kind": "training table" if finding.companion else "copy",
+                    "kind": finding.kind,
                     "companion": finding.companion,
                     "reversible_by": finding.reversible_by,
                     "owner": finding.owner,
@@ -83,7 +92,7 @@ class Report:
         elif not self.findings:
             lines.append("  no training table found")
         for group in _alike(self.findings):
-            first, kind = group[0], "training table" if group[0].companion else "copy"
+            first, kind = group[0], group[0].kind
             rows = " or ".join(sorted({str(f.shape[0]) for f in group}, key=int, reverse=True))
             columns = " or ".join(sorted({str(f.shape[1]) for f in group}, key=int, reverse=True))
             count = f"  ({len(group)} alike)" if len(group) > 1 else ""
@@ -118,7 +127,7 @@ def scan_file(path: str | Path, min_rows: int = 20) -> Report:
     except (UnreadableFileError, OSError) as error:
         return Report(str(path), "unknown", (), str(error))
     findings = tuple(
-        replace(finding, hint=_hint(finding.owner))
+        replace(finding, hint=_hint(finding))
         for member, tree in members
         for finding in find_tables(tree, min_rows=min_rows, prefix=f"{member}:" if member else "")
     )

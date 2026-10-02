@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from tabcustody._detect import as_table, find_tables
-from tabcustody._reader import read
+from tabcustody._reader import _shell_class, read
 
 FIXTURES = Path(__file__).parent / "fixtures"
 ROWS = 300
@@ -47,6 +47,33 @@ def test_the_training_table_of_each_in_context_model_is_found(name, large, table
     assert found[table].shape[0] == ROWS
     assert found[table].companion == target
     assert all(finding.shape[0] == ROWS for finding in found.values())
+
+
+def tabicl_saved_with_its_cache_only():
+    cache = _shell_class("tabicl._model.kv_cache.TabICLCache")()
+    cache.attributes.update(
+        icl_cache=_shell_class("tabicl._model.kv_cache.KVCache")(), train_shape=(4, ROWS, 3)
+    )
+    model = _shell_class("tabicl._sklearn.classifier.TabICLClassifier")()
+    model.attributes.update(model_kv_cache_={"none": cache, "power": cache})
+    return model
+
+
+def test_a_tabicl_key_value_cache_is_reported_as_the_training_rows_it_was_built_from():
+    found = find_tables(tabicl_saved_with_its_cache_only())
+
+    assert [(finding.path, finding.shape, finding.kind) for finding in found] == [
+        ("model_kv_cache_", (ROWS, 3), "key-value cache")
+    ]
+
+
+@pytest.mark.integration
+def test_a_tabicl_file_saved_without_its_training_data_still_reports_its_cache():
+    found = findings("tabicl-kv-cache", large=True)
+
+    assert [(finding.path, finding.shape, finding.kind) for finding in found] == [
+        ("model_kv_cache_", (ROWS, 3), "key-value cache")
+    ]
 
 
 def test_a_transformed_copy_is_reported_next_to_the_table_it_copies():
