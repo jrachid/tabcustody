@@ -30,9 +30,9 @@ HINTS = (
     (
         "tabpfn.",
         (
-            "TabPFN keeps the rows in its default fit mode. Releases that include PriorLabs/TabPFN "
-            "pull request 1323 drop them in fit_mode='fit_with_cache', but keep a key-value cache "
-            "derived from them and the smallest and largest value of each column: "
+            "TabPFN keeps the rows in its default fit mode. From tabpfn 9.1.0, "
+            "fit_mode='fit_with_cache' drops them but keeps a key-value cache derived from them "
+            "and the smallest and largest value of each column: "
             f"{_KEEP_CONFIDENTIAL}"
         ),
     ),

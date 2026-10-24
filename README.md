@@ -47,7 +47,7 @@ fitted.tabpfn_fit (zip)
   training table  executor_state.joblib:ensemble_members[*].X_train  300 rows x 10 or 4 columns  (8 alike)
     why: the 1-D array executor_state.joblib:ensemble_members[*].y_train has one entry per row
     why: X_train is a name libraries use for training rows
-    fix: TabPFN keeps the rows in its default fit mode. Releases that include PriorLabs/TabPFN pull request 1323 drop them in fit_mode='fit_with_cache', but keep a key-value cache derived from them and the smallest and largest value of each column: keep this file as confidential as the data it was fitted on.
+    fix: TabPFN keeps the rows in its default fit mode. From tabpfn 9.1.0, fit_mode='fit_with_cache' drops them but keeps a key-value cache derived from them and the smallest and largest value of each column: keep this file as confidential as the data it was fitted on.
 
 tabicl-cache.pkl (pickle)
   key-value cache  model_kv_cache_  300 rows x 3 columns
@@ -102,7 +102,7 @@ The cache still gives the rows back. Its first block stores, for every training 
 
 Measured by [`comparisons/kv_cache_inversion.py`](comparisons/kv_cache_inversion.py), which uses the saved file, the TabICL library and its public weights, and nothing else; the original table only scores the result. No value comes back to the cent. With 20 columns the search is harder and stops short on 132 rows, though most of their cells still come back within 1%. The search is bounded by the mean and the standard deviation of every column, which the file also keeps in clear. Removing the table from the file is not enough while a cache derived from its rows stays there.
 
-TabPFN's `.tabpfn_fit` archive leaves out the foundation model's weights but keeps the table, and TabDPT offers no option to drop it. TabPFN is about to follow TabICL: [pull request 1323](https://github.com/PriorLabs/TabPFN/pull/1323), merged on 28 September 2026 for memory reasons and not yet released, drops each ensemble member's table once its cache is built in `fit_mode="fit_with_cache"`. Measured on TabPFN's main branch at commit `dbba40314b`, with TabPFN v2 weights: the default mode keeps 300 of 300 incomes in the `.tabpfn_fit` archive, and `fit_with_cache` keeps the smallest and the largest value of every column — here the incomes of the poorest and the richest customer — and no other income beyond chance. Predictions after reload are unchanged in both.
+TabPFN's `.tabpfn_fit` archive leaves out the foundation model's weights but keeps the table, and TabDPT offers no option to drop it. TabPFN followed TabICL in tabpfn 9.1.0, released on 2 October 2026: [pull request 1323](https://github.com/PriorLabs/TabPFN/pull/1323), merged for memory reasons, drops each ensemble member's table once its cache is built in `fit_mode="fit_with_cache"`. Measured before that release, on TabPFN's main branch at commit `dbba40314b` on 28 September 2026, with TabPFN v2 weights: the default mode keeps 300 of 300 incomes in the `.tabpfn_fit` archive, and `fit_with_cache` keeps the smallest and the largest value of every column — here the incomes of the poorest and the richest customer — and no other income beyond chance. Predictions after reload are unchanged in both.
 
 ## What existing tools see
 
@@ -146,7 +146,7 @@ tabcustody discovers the table without being handed the training data, covers th
 - **A one-column table stored in sorted order** is taken for a lookup grid, such as QuantileTransformer's quantiles, and not reported.
 - **Only numeric columns are read.** Text and category columns of a DataFrame stay in the file but are not part of the reported shape.
 - **Reversal covers scikit-learn's StandardScaler, MinMaxScaler and RobustScaler**, when the scaler sits beside the table or is the pipeline step right before it. Tables behind other transforms are still reported; they are not called reversible.
-- **Caches.** TabICL's key-value cache is reported. TabPFN's, kept in `fit_mode="fit_with_cache"` by releases that include pull request 1323, is not: whether its rows can be rebuilt has not been measured.
+- **Caches.** TabICL's key-value cache is reported. TabPFN's, kept in `fit_mode="fit_with_cache"` by tabpfn 9.1.0 and later, is not: whether its rows can be rebuilt has not been measured.
 - **Formats.** Not read: lz4-compressed joblib, safetensors, ONNX, `torch.save` archives. PyTorch tensors inside a pickle stay opaque placeholders.
 - **Memory.** The whole object tree is loaded: scanning the 836 MB TabPFN v3.5 pickle peaks at about the size of the file.
 

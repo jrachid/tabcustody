@@ -7,7 +7,7 @@ import pytest
 from tabcustody import scan_file
 
 FIXTURES = Path(__file__).parent / "fixtures"
-DECIMAL = re.compile(r"\d+\.\d+")
+DECIMAL = re.compile(r"(?<![\d.])\d+\.\d+(?![\d.])")
 
 
 @pytest.mark.parametrize(
