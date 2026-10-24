@@ -24,6 +24,9 @@ classifiers = [
 ]
 dependencies = ["numpy>=1.24"]
 
+[project.optional-dependencies]
+seal = ["cryptography>=43"]
+
 [project.scripts]
 tabcustody = "tabcustody._cli:main"
 
@@ -39,6 +42,7 @@ dev = [
     "mypy>=1.11",
     "joblib>=1.6.0",
     "hypothesis>=6.0",
+    "cryptography>=43",
 ]
 
 [tool.hatch.build.targets.wheel]
