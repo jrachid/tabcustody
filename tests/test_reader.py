@@ -4,7 +4,7 @@ from collections import OrderedDict
 import numpy as np
 import pytest
 
-from tabcustody._reader import Shell, read_bytes
+from tabcustody._reader import _OPAQUE, _STREAM_BLOB, _TORCH_STORAGE, Shell, read_bytes
 
 
 class Estimator:
@@ -71,3 +71,29 @@ def test_plain_containers_stay_plain():
     tree = read_bytes(pickle.dumps(OrderedDict(a=[1, 2], b=(3, {4}), c=frozenset({5}))))
 
     assert tree == {"a": [1, 2], "b": (3, {4}), "c": frozenset({5})}
+
+
+def test_a_pytorch_storage_is_dropped_for_a_placeholder_that_keeps_its_length():
+    storage = _TORCH_STORAGE + b"\x00" * _STREAM_BLOB
+
+    tree = read_bytes(pickle.dumps({"weights": storage}))
+
+    placeholder = tree["weights"]
+    assert isinstance(placeholder, Shell) and placeholder.name == _OPAQUE
+    assert placeholder.args == (len(storage),)
+
+
+def test_a_large_byte_string_that_is_not_a_storage_is_kept():
+    blob = b"not a tensor" + b"\x01" * _STREAM_BLOB
+
+    tree = read_bytes(pickle.dumps({"blob": blob}))
+
+    assert tree["blob"] == blob
+
+
+def test_a_large_numpy_array_is_read_in_full():
+    array = np.arange(_STREAM_BLOB, dtype=np.float64)
+
+    tree = read_bytes(pickle.dumps({"table": array}))
+
+    assert np.array_equal(tree["table"], array)

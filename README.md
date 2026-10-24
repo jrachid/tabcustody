@@ -135,6 +135,7 @@ tabcustody discovers the table without being handed the training data, covers th
 |---|---|
 | Reading a file runs none of its code, joblib object arrays included | `test_safety.py::test_a_pickle_that_runs_a_command_on_load_runs_nothing`, `test_formats.py::test_an_object_array_inside_a_joblib_file_is_read_without_running_it` |
 | Scanning imports no model library | `test_safety.py::test_scanning_imports_neither_torch_nor_xgboost` |
+| Reading skips the weights, keeping each table in full | `test_reader.py::test_a_pytorch_storage_is_dropped_for_a_placeholder_that_keeps_its_length`, `::test_a_large_numpy_array_is_read_in_full` |
 | The training table of TabICL, TabPFN v2, TabPFN v3.5 and TabDPT is found | `test_detection.py::test_the_training_table_of_each_in_context_model_is_found` (TabPFN and TabDPT files are too large to version: marked `integration`), `test_formats.py::test_a_tabpfn_fit_archive_is_scanned_member_by_member` |
 | A TabICL file saved with `save_training_data=False` is reported for its key-value cache | `test_detection.py::test_a_tabicl_key_value_cache_is_reported_as_the_training_rows_it_was_built_from`, `::test_a_tabicl_file_saved_without_its_training_data_still_reports_its_cache` (marked `integration`) |
 | A TabPFN file fitted with `fit_mode="fit_with_cache"` (tabpfn 9.1.0 and later) is reported for its key-value cache, quantized to 8 bits or not | `test_detection.py::test_a_tabpfn_key_value_cache_is_reported_as_the_training_rows_it_was_built_from`, `::test_a_tabpfn_file_fitted_with_cache_reports_its_cache` (marked `integration`) |
@@ -158,7 +159,7 @@ tabcustody discovers the table without being handed the training data, covers th
 - **Caches.** The key-value caches of TabICL and of TabPFN 9.1.0 and later are reported. They are recognised by the names of their classes: a cache from another library, or from a release that renames them, is not. Whether TabPFN's rows can be rebuilt from its cache has not been measured.
 - **Column extremes** are recognised as `X_min_` and `X_max_` beside a scaler of the same width, as TabICL stores them. Others are not reported: those of MinMaxScaler (`data_min_`, `data_max_`), and those TabPFN v2 keeps in the first and last rows of a quantile grid.
 - **Formats.** Not read: lz4-compressed joblib, safetensors, ONNX, `torch.save` archives. PyTorch tensors inside a pickle stay opaque placeholders.
-- **Memory.** The whole object tree is loaded: scanning the 836 MB TabPFN v3.5 pickle peaks at about the size of the file.
+- **Memory.** The object tree is read without the weights: the bytes of a PyTorch storage are skipped and replaced by a placeholder that keeps their length, so scanning the 836 MB TabPFN v3.5 pickle peaks at about 40 MB. A large table stored as a NumPy array is still read in full, since it is what the scanner looks for.
 
 ## What comes next
 

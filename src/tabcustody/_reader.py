@@ -141,6 +141,11 @@ class UnreadableFileError(Exception):
 
 
 _JOBLIB_WRAPPER = "joblib.numpy_pickle.NumpyArrayWrapper"
+_OPAQUE = "tabcustody.opaque_bytes"
+
+# A PyTorch storage pickles as a torch.save stream that opens with this magic; nothing numpy stores does.
+_TORCH_STORAGE = b"\x80\x02\x8a\n" + (0x1950A86A20F9469CFC6C).to_bytes(10, "little")
+_STREAM_BLOB = 1 << 16
 
 
 def _read_exactly(stream: BinaryIO, size: int) -> bytes:
@@ -183,6 +188,24 @@ class _Unpickler(pickle._Unpickler):
         if isinstance(top, Shell) and top.name == _JOBLIB_WRAPPER:
             self.stack[-1] = self._read_joblib_array(top)
 
+    def _load_bytes(self, width: int, into_bytearray: bool) -> None:
+        """Reads a length-prefixed byte string; a tensor's storage past the streaming size is skipped for a placeholder that keeps its length, every other blob read as is."""
+        read = self.read  # type: ignore[attr-defined]
+        size = int.from_bytes(read(width), "little")
+        if size <= _STREAM_BLOB:
+            data = read(size)
+            self.stack.append(bytearray(data) if into_bytearray else data)
+            return
+        head = read(len(_TORCH_STORAGE))
+        if head == _TORCH_STORAGE:
+            remaining = size - len(head)
+            while remaining:
+                remaining -= len(read(min(remaining, 1 << 20)))
+            self.stack.append(_shell_class(_OPAQUE)(size))
+        else:
+            data = head + read(size - len(head))
+            self.stack.append(bytearray(data) if into_bytearray else data)
+
     def _read_joblib_array(self, wrapper: Shell) -> np.ndarray:
         """Reads the array joblib writes right after its NumpyArrayWrapper, as joblib 1.6 `read_array` does."""
         try:
@@ -206,6 +229,9 @@ class _Unpickler(pickle._Unpickler):
 
 
 _Unpickler.dispatch[pickle.BUILD[0]] = _Unpickler._load_build
+_Unpickler.dispatch[pickle.BINBYTES[0]] = lambda self: self._load_bytes(4, False)
+_Unpickler.dispatch[pickle.BINBYTES8[0]] = lambda self: self._load_bytes(8, False)
+_Unpickler.dispatch[pickle.BYTEARRAY8[0]] = lambda self: self._load_bytes(8, True)
 
 
 class _ZlibReader(io.RawIOBase):
