@@ -109,6 +109,41 @@ def build(name: str):
         from sklearn.neural_network import MLPClassifier
 
         return MLPClassifier(hidden_layer_sizes=(100, 100), max_iter=300, random_state=0).fit(X, y)
+    if name == "nearest-neighbors":
+        from sklearn.neighbors import NearestNeighbors
+
+        return NearestNeighbors().fit(X)
+    if name == "kernel-density":
+        from sklearn.neighbors import KernelDensity
+
+        return KernelDensity().fit(X)
+    if name == "kernel-pca":
+        from sklearn.decomposition import KernelPCA
+
+        return KernelPCA(n_components=2).fit(X)
+    if name == "isomap":
+        from sklearn.manifold import Isomap
+
+        return Isomap().fit(X)
+    if name == "local-outlier-factor":
+        from sklearn.neighbors import LocalOutlierFactor
+
+        return LocalOutlierFactor(novelty=True).fit(X)
+    if name == "gaussian-process-regressor":
+        from sklearn.gaussian_process import GaussianProcessRegressor
+
+        return GaussianProcessRegressor().fit(X, y)
+    if name == "gaussian-process-classifier":
+        from sklearn.gaussian_process import GaussianProcessClassifier
+
+        return GaussianProcessClassifier().fit(X, y)
+    if name == "stacking":
+        from sklearn.ensemble import RandomForestClassifier, StackingClassifier
+        from sklearn.neighbors import KNeighborsClassifier
+
+        forest = RandomForestClassifier(n_estimators=20, oob_score=True, random_state=0)
+        estimators = [("knn", KNeighborsClassifier()), ("forest", forest)]
+        return StackingClassifier(estimators).fit(X, y)
     raise KeyError(name)
 
 
@@ -126,6 +161,14 @@ SMALL = {
     "standard-kneighbors": "scikit-learn",
     "minmax-kneighbors": "scikit-learn",
     "robust-kneighbors": "scikit-learn",
+    "nearest-neighbors": "scikit-learn",
+    "kernel-density": "scikit-learn",
+    "kernel-pca": "scikit-learn",
+    "isomap": "scikit-learn",
+    "local-outlier-factor": "scikit-learn",
+    "gaussian-process-regressor": "scikit-learn",
+    "gaussian-process-classifier": "scikit-learn",
+    "stacking": "scikit-learn",
 }
 BIG = {"tabpfn-v2": "tabpfn", "tabpfn-v3.5": "tabpfn", "tabdpt": "tabdpt"}
 

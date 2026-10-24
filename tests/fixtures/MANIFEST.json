@@ -83,5 +83,45 @@
     "library": "tabpfn",
     "version": "9.2.0",
     "numpy": "2.5.3"
+  },
+  "nearest-neighbors": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "kernel-density": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "kernel-pca": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "isomap": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "local-outlier-factor": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "gaussian-process-regressor": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "gaussian-process-classifier": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "stacking": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
   }
 }
