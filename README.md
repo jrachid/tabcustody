@@ -2,7 +2,7 @@
 
 > With in-context tabular models, the model file **is** your training data. tabcustody proves it on your files, then lets you deploy, erase and trace without exposing that data.
 
-**Status: pre-alpha.** Version 0.2 ships the scanner: it tells whether a model file carries its training data, without running the file. Separating, erasing and tracing come next.
+**Status: pre-alpha.** Version 0.3 ships the scanner, which tells whether a model file carries its training data without running the file, and seal, which saves the model with that data encrypted under a key. Erasing and tracing come next.
 
 ## Quick start
 
