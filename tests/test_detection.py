@@ -200,6 +200,34 @@ def test_instance_based_models_are_reported_like_sacroml_does(name, table, compa
 
 
 @pytest.mark.parametrize(
+    ("name", "rows", "factor"),
+    [
+        ("gaussian-process-regressor", "X_train_", "L_"),
+        ("gaussian-process-classifier", "base_estimator_.X_train_", "base_estimator_.L_"),
+    ],
+)
+def test_a_cholesky_factor_is_not_called_a_training_table(name, rows, factor):
+    found = {finding.path: finding for finding in findings(name)}
+
+    assert found[rows].kind == "training table"
+    assert factor not in found
+
+
+def test_neighbour_distances_are_not_called_a_training_table():
+    found = {finding.path: finding for finding in findings("local-outlier-factor")}
+
+    assert found["_fit_X"].kind == "training table"
+    assert "_distances_fit_X_" not in found
+
+
+def test_out_of_bag_probabilities_are_not_a_copy():
+    found = {finding.path: finding for finding in findings("stacking")}
+
+    assert found["estimators_[0]._fit_X"].kind == "training table"
+    assert "estimators_[1].oob_decision_function_" not in found
+
+
+@pytest.mark.parametrize(
     "name",
     [
         "xgboost",

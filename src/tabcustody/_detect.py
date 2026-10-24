@@ -200,6 +200,22 @@ def _is_lookup_grid(array: np.ndarray) -> bool:
     return array.shape[0] > 1 and bool(np.all(np.diff(array, axis=0) >= 0))
 
 
+def _declared_width(node: Any) -> int | None:
+    """Returns the n_features_in_ a scikit-learn style estimator declares, the number of columns it was fitted on."""
+    width = node.attributes.get("n_features_in_") if isinstance(node, Shell) else None
+    return int(width) if isinstance(width, int | np.integer) else None
+
+
+def _derived(array: np.ndarray, declared: int | None) -> bool:
+    """Tells an array computed from the rows, such as a kernel's Cholesky factor or neighbour distances, from the rows themselves."""
+    if declared is not None and declared != array.shape[1]:
+        return True
+    if array.shape[0] != array.shape[1]:
+        return False
+    triangular = not np.triu(array, 1).any() or not np.tril(array, -1).any()
+    return triangular or bool(np.allclose(array, array.T))
+
+
 def _named_children(node: Any) -> list[tuple[str, Any]]:
     if isinstance(node, Shell):
         return [(f".{key}", value) for key, value in node.attributes.items()] + [
@@ -285,6 +301,7 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
 
     tables: list[Finding] = []
     arrays: dict[str, np.ndarray] = {}
+    declared: dict[str, int | None] = {}
     scalers: list[tuple[str, Shell]] = []
     for path, node in _walk(tree):
         table = as_table(node)
@@ -326,7 +343,12 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
                 )
                 continue
             value = as_table(child)
-            if value is None or value.shape[0] < min_rows or _is_lookup_grid(value):
+            if value is None:
+                continue
+            declared[_clean(path + name)] = _declared_width(node)
+            if value.shape[0] < min_rows or _is_lookup_grid(value):
+                continue
+            if _derived(value, _declared_width(node)):
                 continue
             companion = next(
                 (
@@ -359,7 +381,7 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
         if not (finding.cache or finding.extremes)
     }
     for path, array in arrays.items():
-        if path in confirmed:
+        if path in confirmed or _derived(array, declared.get(path)):
             continue
         source = next((other for other, rows in confirmed.items() if rows == array.shape[0]), None)
         if source is not None:
