@@ -121,6 +121,8 @@ _SAFE_GLOBALS: dict[tuple[str, str], Any] = {
     ("builtins", "set"): set,
     ("builtins", "frozenset"): frozenset,
     ("builtins", "bytearray"): bytearray,
+    ("builtins", "bytes"): bytes,
+    ("builtins", "str"): str,
     ("builtins", "complex"): complex,
     ("builtins", "slice"): slice,
     ("builtins", "object"): object,
@@ -134,6 +136,10 @@ _SAFE_GLOBALS: dict[tuple[str, str], Any] = {
     ("numpy", "ndarray"): np.ndarray,
     ("numpy", "dtype"): np.dtype,
 }
+
+
+# Protocol-2 pickles name the built-ins and copyreg as Python 2 did; the loader maps them to today's names.
+_PY2_MODULES = {"__builtin__": "builtins", "copy_reg": "copyreg"}
 
 
 class UnreadableFileError(Exception):
@@ -170,6 +176,7 @@ class _Unpickler(pickle._Unpickler):
         self._stream = stream
 
     def find_class(self, module: str, name: str) -> Any:
+        module = _PY2_MODULES.get(module, module)
         if (module, name) in _SAFE_GLOBALS:
             return _SAFE_GLOBALS[(module, name)]
         prefix, _, submodule = module.rpartition(".")
@@ -200,7 +207,10 @@ class _Unpickler(pickle._Unpickler):
         if head == _TORCH_STORAGE:
             remaining = size - len(head)
             while remaining:
-                remaining -= len(read(min(remaining, 1 << 20)))
+                chunk = read(min(remaining, 1 << 20))
+                if not chunk:
+                    raise UnreadableFileError("the file ends inside a tensor")
+                remaining -= len(chunk)
             self.stack.append(_shell_class(_OPAQUE)(size))
         else:
             data = head + read(size - len(head))
