@@ -170,13 +170,19 @@ def restore(model_bytes: bytes, lifted: list[Any]) -> Any:
     return _Unpickler(io.BytesIO(model_bytes)).load()
 
 
-def _derive(key: bytes, salt: bytes) -> tuple[bytes, bytes, bytes, str]:
-    """Derives, from the sealing key and a salt, the encryption key, the fingerprint key, a commitment to the key, and a key id, each under its own label so none reveals another."""
+def _derive(key: bytes, salt: bytes) -> tuple[bytes, bytes, bytes, str, bytes]:
+    """Derives, from the sealing key and a salt, the encryption key, the fingerprint key, a commitment to the key, a key id, and a key for the whole-file authentication tag, each under its own label so none reveals another."""
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-    material = HKDF(hashes.SHA256(), 104, salt, _HKDF_INFO).derive(key)
-    return material[:32], material[32:64], material[64:96], material[96:104].hex()
+    material = HKDF(hashes.SHA256(), 136, salt, _HKDF_INFO).derive(key)
+    return (
+        material[:32],
+        material[32:64],
+        material[64:96],
+        material[96:104].hex(),
+        material[104:136],
+    )
 
 
 def _hmac(fp_key: bytes, data: bytes) -> str:
@@ -187,13 +193,19 @@ def _hmac(fp_key: bytes, data: bytes) -> str:
     return tag.finalize().hex()
 
 
+def _file_tag(mac_key: bytes, model_bytes: bytes, manifest: dict[str, Any]) -> str:
+    """Authenticates the clear model skeleton and the manifest together, so a changed model.pkl or manifest is refused before anything is decrypted or unpickled."""
+    body = {name: value for name, value in manifest.items() if name != "mac"}
+    return _hmac(mac_key, model_bytes + json.dumps(body, sort_keys=True).encode())
+
+
 def seal(model: Any, path: str | Path, key: bytes, min_rows: int = MIN_ROWS) -> None:
     """Writes a model file whose training data is encrypted with `key`: reloaded with the key by `unseal`, the model predicts exactly as before; without it, `tabcustody scan` finds neither a training table nor a cache. Raises CannotSeal if some training data cannot be reached."""
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     model_bytes, lifted = lift(model, min_rows)
     salt = os.urandom(16)
-    enc_key, fp_key, commitment, key_id = _derive(key, salt)
+    enc_key, fp_key, commitment, key_id, mac_key = _derive(key, salt)
     cipher = AESGCM(enc_key)
     objects = []
     for slot, obj in enumerate(lifted):
@@ -218,6 +230,7 @@ def seal(model: Any, path: str | Path, key: bytes, min_rows: int = MIN_ROWS) -> 
         "key_id": key_id,
         "objects": objects,
     }
+    manifest["mac"] = _file_tag(mac_key, model_bytes, manifest)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("model.pkl", model_bytes)
         archive.writestr("manifest.json", json.dumps(manifest))
@@ -232,9 +245,14 @@ def unseal(path: str | Path, key: bytes) -> Any:
     with zipfile.ZipFile(path) as archive:
         manifest = json.loads(archive.read("manifest.json"))
         model_bytes = archive.read("model.pkl")
-    enc_key, _, commitment, _ = _derive(key, bytes.fromhex(manifest["salt"]))
+    enc_key, _, commitment, _, mac_key = _derive(key, bytes.fromhex(manifest["salt"]))
     if not bytes_eq(commitment, bytes.fromhex(manifest["commitment"])):
         raise CannotUnseal("the key does not open this file")
+    expected = _file_tag(mac_key, model_bytes, manifest)
+    if "mac" not in manifest or not bytes_eq(
+        bytes.fromhex(expected), bytes.fromhex(manifest["mac"])
+    ):
+        raise CannotUnseal("the file was changed since it was sealed")
     cipher = AESGCM(enc_key)
     lifted: list[Any] = [None] * len(manifest["objects"])
     for entry in manifest["objects"]:

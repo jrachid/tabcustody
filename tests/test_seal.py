@@ -205,3 +205,34 @@ def test_scanning_imports_no_cryptography(tmp_path):
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
 
     assert out.stdout.strip() == "False"
+
+
+def test_a_replaced_model_skeleton_is_refused_and_not_run(tmp_path):
+    import json
+    import pickle
+    import zipfile
+
+    from tabcustody import CannotUnseal, seal, unseal
+
+    path = tmp_path / "model.sealed"
+    key = b"\x01" * 32
+    seal(Estimator(), path, key)
+    ran = tmp_path / "ran"
+
+    class Bomb:
+        def __reduce__(self):
+            return (open, (str(ran), "w"))
+
+    with zipfile.ZipFile(path) as archive:
+        manifest = archive.read("manifest.json")
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("model.pkl", pickle.dumps({"x": Bomb()}))
+        archive.writestr("manifest.json", manifest)
+
+    try:
+        unseal(path, key)
+        raise AssertionError("a replaced model skeleton should be refused")
+    except CannotUnseal as error:
+        assert "changed" in str(error)
+    assert not ran.exists()
+    assert json.loads(manifest)  # the manifest itself was untouched, yet unseal still refused
