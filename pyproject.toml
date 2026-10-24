@@ -46,7 +46,10 @@ packages = ["src/tabcustody"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: fits the real in-context models, slow and heavy; run before each release"]
+markers = [
+    "integration: fits the real in-context models, slow and heavy; run before each release",
+    "fuzz: generates hostile pickle streams; a nightly workflow runs many more examples",
+]
 
 [tool.mypy]
 files = ["src"]
