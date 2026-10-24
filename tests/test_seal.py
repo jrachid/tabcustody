@@ -1,12 +1,14 @@
-import pickle
-
 import numpy as np
 
 from tabcustody._detect import find_tables
 from tabcustody._reader import read_bytes
-from tabcustody._seal import Sealed, lifted, training_refs
+from tabcustody._seal import lift, restore, training_arrays
 
 ROWS = 300
+
+
+class Tree:
+    __slots__ = ("data",)
 
 
 class Estimator:
@@ -14,6 +16,9 @@ class Estimator:
         self._fit_X = np.arange(ROWS * 3, dtype=float).reshape(ROWS, 3)
         self._y = np.arange(ROWS)
         self.n_features_in_ = 3
+        # The fitted tree shares the same array object, as a real kNN's KD tree does.
+        self._tree = Tree()
+        self._tree.data = self._fit_X
 
 
 class Pipeline:
@@ -22,40 +27,45 @@ class Pipeline:
 
 
 def test_the_training_table_and_its_target_are_found_in_a_live_model():
+    arrays = training_arrays(Estimator())
+
+    shapes = sorted((a.shape for a in arrays), key=len)
+    assert (ROWS,) in shapes and (ROWS, 3) in shapes
+
+
+def test_the_sealed_bytes_carry_no_training_table_even_the_shared_copy():
+    model_bytes, lifted = lift(Estimator())
+
+    assert [a.shape for a in lifted] == [(ROWS, 3), (ROWS,)]
+    assert find_tables(read_bytes(model_bytes)) == []
+
+
+def test_restoring_gives_the_exact_arrays_back_and_keeps_them_shared():
     model = Estimator()
 
-    refs = training_refs(model)
+    model_bytes, lifted = lift(model)
+    back = restore(model_bytes, lifted)
 
-    assert {ref.key for ref in refs} == {"_fit_X", "_y"}
-
-
-def test_sealing_swaps_the_table_for_a_marker_and_the_saved_model_carries_no_table():
-    model = Estimator()
-
-    with lifted(model) as objects:
-        assert isinstance(model._fit_X, Sealed) and isinstance(model._y, Sealed)
-        assert [o.shape for o in objects] == [(ROWS, 3), (ROWS,)]
-        assert find_tables(read_bytes(pickle.dumps(model))) == []
+    assert np.array_equal(back._fit_X, model._fit_X)
+    assert np.array_equal(back._y, model._y)
+    assert back._tree.data is back._fit_X
 
 
-def test_the_model_is_whole_again_after_sealing_even_when_the_block_raises():
+def test_the_live_model_is_not_touched_by_sealing():
     model = Estimator()
     before = model._fit_X.copy()
 
-    try:
-        with lifted(model):
-            raise RuntimeError("saving failed")
-    except RuntimeError:
-        pass
+    lift(model)
 
     assert np.array_equal(model._fit_X, before)
-    assert not isinstance(model._fit_X, Sealed)
+    assert isinstance(model._fit_X, np.ndarray)
 
 
-def test_a_table_nested_in_a_pipeline_is_found_and_restored():
+def test_a_table_nested_in_a_pipeline_is_sealed_and_restored():
     model = Pipeline()
-    knn = model.steps[1][1]
 
-    with lifted(model):
-        assert isinstance(knn._fit_X, Sealed)
-    assert knn._fit_X.shape == (ROWS, 3)
+    model_bytes, lifted = lift(model)
+    back = restore(model_bytes, lifted)
+
+    assert find_tables(read_bytes(model_bytes)) == []
+    assert np.array_equal(back.steps[1][1]._fit_X, model.steps[1][1]._fit_X)
