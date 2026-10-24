@@ -33,6 +33,7 @@ class Finding:
     cache: bool = False
     extremes: bool = False
     copy: bool = False
+    columns: tuple[str, ...] | None = None
 
     @property
     def kind(self) -> str:
@@ -294,6 +295,16 @@ def _attach_scalers(
     return attached
 
 
+def _column_names(node: Any) -> tuple[str, ...] | None:
+    """Returns the column names a scikit-learn style estimator records in feature_names_in_, when it keeps them as text."""
+    if not isinstance(node, Shell):
+        return None
+    names = node.attributes.get("feature_names_in_")
+    if isinstance(names, np.ndarray) and names.ndim == 1 and names.dtype.kind in "UO":
+        return tuple(str(name) for name in names)
+    return None
+
+
 def _fitted_width(raw: str, widths: dict[str, tuple[int, str]]) -> tuple[int, str, str] | None:
     """Returns the n_features_in_ of the closest estimator above the raw path `raw`, with its own raw path and class."""
     while raw:
@@ -323,6 +334,19 @@ def _copies(
     return copies
 
 
+def _attach_column_names(tables: list[Finding], named: dict[str, tuple[str, ...]]) -> list[Finding]:
+    """Names a table's columns when the estimator that holds it directly records feature_names_in_ of the same width, never from an ancestor, so a preprocessed table keeps no names."""
+    attached = []
+    for finding in tables:
+        names = named.get(_parent(finding.path))
+        if finding.cache or finding.extremes or names is None or len(names) != finding.shape[-1]:
+            attached.append(finding)
+            continue
+        reason = f"the columns are named {', '.join(names)}"
+        attached.append(replace(finding, columns=names, evidence=(*finding.evidence, reason)))
+    return attached
+
+
 def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding]:
     """Returns the training tables in `tree`: 2-D arrays beside a 1-D array of the same length or as wide as their estimator's n_features_in_, caches, column extremes, copies."""
 
@@ -334,12 +358,16 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
     declared: dict[str, int | None] = {}
     widths: dict[str, tuple[int, str]] = {}
     raw_paths: dict[str, str] = {}
+    named: dict[str, tuple[str, ...]] = {}
     scalers: list[tuple[str, Shell]] = []
     for path, node in _walk(tree):
         table = as_table(node)
         if table is not None:
             arrays[_clean(path)] = table
             raw_paths[_clean(path)] = path
+        names = _column_names(node)
+        if names is not None:
+            named[_clean(path)] = names
         if scaler_kind(node) is not None:
             scalers.append((_clean(path), node))
         width = _declared_width(node)
@@ -423,4 +451,5 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
         reason = f"it has {fitted[0]} columns, the n_features_in_ {estimator} declares"
         tables.append(Finding(path, array.shape, None, (reason,), owner=fitted[2]))
     tables += _copies(tables, arrays, declared)
+    tables = _attach_column_names(tables, named)
     return _attach_scalers(tables, arrays, scalers)

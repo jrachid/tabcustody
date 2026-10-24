@@ -182,6 +182,13 @@ def test_column_extremes_need_a_scaler_of_their_width():
     assert find_tables(preprocessor_with_extremes(scaler_width=4)) == []
 
 
+def test_a_preprocessed_table_is_not_given_the_input_column_names():
+    found = findings("tabpfn-v2", large=True)
+
+    assert found
+    assert all(finding.columns is None for finding in found)
+
+
 def test_a_transformed_copy_is_reported_next_to_the_table_it_copies():
     copies = [finding for finding in findings("tabicl") if finding.kind == "copy"]
 

@@ -98,6 +98,7 @@ class Report:
                     "path": finding.path,
                     "rows": None if finding.extremes else finding.shape[0],
                     "columns": finding.shape[1] if len(finding.shape) > 1 else None,
+                    "column_names": list(finding.columns) if finding.columns else None,
                     "kind": finding.kind,
                     "companion": finding.companion,
                     "reversible_by": finding.reversible_by,

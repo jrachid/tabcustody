@@ -137,6 +137,15 @@ def test_models_without_a_fix_say_so(name, library):
     assert library in table.hint
 
 
+def test_the_report_names_the_columns_when_the_model_kept_their_names():
+    report = scan_file(FIXTURES / "kneighbors.pkl")
+
+    table = next(f for f in report.findings if f.path == "_fit_X")
+    assert table.columns == ("age", "income", "debt")
+    assert "age, income, debt" in report.to_text()
+    assert report.to_dict()["findings"][0]["column_names"] == ["age", "income", "debt"]
+
+
 def test_a_clean_file_says_it_carries_no_training_table():
     report = scan_file(FIXTURES / "xgboost.pkl")
 

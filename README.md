@@ -147,6 +147,7 @@ tabcustody discovers the table without being handed the training data, covers th
 | A table stored standardised is declared reversible, and reversing gives the exact rows | `test_reversal.py::test_a_standardised_table_is_rebuilt_from_the_scaler_saved_beside_it`, `::test_a_scaled_pipeline_table_is_rebuilt_from_the_scaler_step` |
 | A scaler that does not feed the table is never credited | `test_reversal.py::test_a_scaler_nested_inside_another_transformer_is_not_credited`, `::test_a_table_stored_as_is_is_not_said_to_be_reversible` |
 | The report never prints a value of the table | `test_report.py::test_the_report_never_prints_a_value_of_the_table` |
+| The report names the columns when the model kept their names, never a value | `test_report.py::test_the_report_names_the_columns_when_the_model_kept_their_names` |
 | joblib files, compressed or not, read like pickles | `test_formats.py::test_a_joblib_file_is_scanned_like_a_pickle`, `::test_compressed_joblib_files_are_read` |
 | The command exits 1 on a file that carries training data | `test_cli.py::test_the_command_exits_non_zero_when_a_table_is_found` |
 
@@ -155,6 +156,7 @@ tabcustody discovers the table without being handed the training data, covers th
 - **A table is recognised by its target or by its width.** The scanner looks for a 2-D numeric array beside a 1-D array with one entry per row, or one with as many columns as the estimator above it declares in `n_features_in_`. Rows kept without a target by a class that does not declare `n_features_in_`, or tables under 20 rows (`--min-rows`), are not reported.
 - **A one-column table stored in sorted order** is taken for a lookup grid, such as QuantileTransformer's quantiles, and not reported.
 - **Only numeric columns are read.** Text and category columns of a DataFrame stay in the file but are not part of the reported shape.
+- **Column names are shown when the model kept them** in `feature_names_in_` on the estimator that holds the table, such as a k-nearest-neighbours model fitted on a named DataFrame. A table stored preprocessed (TabPFN, TabICL), behind a scaler, or without names is reported by its shape alone. The report gives the names, never a value.
 - **Reversal covers scikit-learn's StandardScaler, MinMaxScaler and RobustScaler**, when the scaler sits beside the table or is the pipeline step right before it. Tables behind other transforms are still reported; they are not called reversible.
 - **Caches.** The key-value caches of TabICL and of TabPFN 9.1.0 and later are reported. They are recognised by the names of their classes: a cache from another library, or from a release that renames them, is not. Whether TabPFN's rows can be rebuilt from its cache has not been measured.
 - **Column extremes** are recognised as `X_min_` and `X_max_` beside a scaler of the same width, as TabICL stores them. Others are not reported: those of MinMaxScaler (`data_min_`, `data_max_`), and those TabPFN v2 keeps in the first and last rows of a quantile grid.
