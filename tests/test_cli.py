@@ -41,3 +41,54 @@ def test_the_package_runs_as_a_module():
     )
 
     assert result.returncode == 0
+
+
+def test_seal_then_unseal_round_trips_through_the_command(tmp_path, capsys):
+    import numpy as np
+
+    model = {"_fit_X": np.arange(60.0).reshape(20, 3), "_y": np.arange(20)}
+    source = tmp_path / "model.pkl"
+    source.write_bytes(__import__("pickle").dumps(model))
+    sealed = tmp_path / "model.sealed"
+    rebuilt = tmp_path / "back.pkl"
+    key = tmp_path / "key"
+    key.write_bytes(b"\x07" * 32)
+
+    assert main(["seal", str(source), str(sealed), "--key-file", str(key)]) == 0
+    assert not scan_carries(sealed)
+    assert main(["unseal", str(sealed), str(rebuilt), "--key-file", str(key)]) == 0
+
+    back = __import__("pickle").loads(rebuilt.read_bytes())
+    import numpy as np
+
+    assert np.array_equal(back["_fit_X"], model["_fit_X"])
+
+
+def test_sealing_without_a_key_exits_two(tmp_path, monkeypatch):
+    monkeypatch.delenv("TABCUSTODY_KEY", raising=False)
+    source = tmp_path / "model.pkl"
+    source.write_bytes(__import__("pickle").dumps({"x": 1}))
+
+    assert main(["seal", str(source), str(tmp_path / "out.sealed")]) == 2
+
+
+def test_unsealing_with_a_wrong_key_exits_three(tmp_path):
+    import numpy as np
+
+    model = {"_fit_X": np.arange(60.0).reshape(20, 3), "_y": np.arange(20)}
+    source = tmp_path / "model.pkl"
+    source.write_bytes(__import__("pickle").dumps(model))
+    sealed = tmp_path / "model.sealed"
+    right, wrong = tmp_path / "right", tmp_path / "wrong"
+    right.write_bytes(b"\x01" * 32)
+    wrong.write_bytes(b"\x02" * 32)
+
+    main(["seal", str(source), str(sealed), "--key-file", str(right)])
+
+    assert main(["unseal", str(sealed), str(tmp_path / "back.pkl"), "--key-file", str(wrong)]) == 3
+
+
+def scan_carries(path) -> bool:
+    from tabcustody import scan_file
+
+    return scan_file(path).carries_training_data

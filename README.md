@@ -129,6 +129,28 @@ Other tools look at model files for a different reason, or skip them:
 
 tabcustody discovers the table without being handed the training data, covers the in-context tabular models, and tells when values stored behind a scaler can be rebuilt, as with TabDPT.
 
+## Seal: move the training data under a key
+
+`seal` saves a fitted model with its training table, copies, target, column extremes and key-value cache encrypted, so the file travels like the key and not like the data. Install the extra, then from Python:
+
+```python
+from tabcustody import seal, unseal
+
+seal(model, "model.sealed", key=b"...32 bytes or more...")
+restored = unseal("model.sealed", key=b"...")  # predicts exactly as model
+```
+
+or from the command line, with the key in a file or `TABCUSTODY_KEY`:
+
+```bash
+pip install "tabcustody[seal]"
+tabcustody seal model.pkl model.sealed --key-file key
+tabcustody scan model.sealed      # exits 0: no training table, no cache
+tabcustody unseal model.sealed restored.pkl --key-file key
+```
+
+Each object is encrypted with AES-256-GCM under a key derived from yours by HKDF. The file commits to the key, so a wrong key is refused before anything is decrypted and a file cannot be crafted to open under two keys; a changed file is refused; the manifest fingerprints are keyed, so a held dataset cannot be confirmed against the file without the key. The key is never written. `seal` reads, and so runs, the model's own pickle, and `unseal` does too: use them on your own files. A model that keeps its rows only inside a C object's state, such as KernelDensity's KD tree, is refused rather than half-sealed.
+
 ## Guarantees and the tests that prove them
 
 | Guarantee | Test |
@@ -172,7 +194,7 @@ tabcustody discovers the table without being handed the training data, covers th
 ## What comes next
 
 1. **Detect** — shipped in 0.1.
-2. **Separate** — in development on the main branch. `pip install tabcustody[seal]`, then `tabcustody.seal(model, path, key)` writes the model with its training table, copies, target, column extremes and key-value cache encrypted (AES-256-GCM, with a commitment to the key so a file cannot be made to open under two keys); `tabcustody.unseal(path, key)` reloads it to predict exactly as before. Without the key a scan finds neither a table nor a cache. A model that keeps its rows only inside a C object's state, such as KernelDensity's KD tree, is refused rather than half-sealed. The `tabcustody seal` command and a release come next.
+2. **Separate** — on the main branch, releasing in 0.3. `seal` and `unseal`, as the Python API and the `tabcustody seal`/`unseal` commands, move the training data under a key (see above).
 3. **Erase.** Find a person's rows, remove them, refit, and keep a record that proves it — an erasure request under GDPR article 17 becomes a routine operation with these models, where classic models would need retraining.
 4. **Trace and verify.** Know which exact table was in place for any past prediction, and check that production predicts like development.
 

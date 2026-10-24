@@ -50,3 +50,11 @@ jobs:
           set +e
           "$RUNNER_TEMP/env/bin/tabcustody" scan tests/fixtures/tabicl.pkl; test $? -eq 1 || exit 1
           "$RUNNER_TEMP/env/bin/tabcustody" scan tests/fixtures/xgboost.pkl; test $? -eq 0 || exit 1
+      - name: The seal extra installs and a sealed file scans clean
+        run: |
+          uv pip install --python "$RUNNER_TEMP/env" "tabcustody[seal] @ file://$(ls "$PWD"/dist/*.whl)"
+          head -c 32 /dev/urandom > "$RUNNER_TEMP/key"
+          "$RUNNER_TEMP/env/bin/tabcustody" seal tests/fixtures/kneighbors.pkl "$RUNNER_TEMP/m.sealed" --key-file "$RUNNER_TEMP/key"
+          set +e
+          "$RUNNER_TEMP/env/bin/tabcustody" scan "$RUNNER_TEMP/m.sealed"; test $? -eq 0 || exit 1
+          "$RUNNER_TEMP/env/bin/tabcustody" unseal "$RUNNER_TEMP/m.sealed" "$RUNNER_TEMP/back.pkl" --key-file "$RUNNER_TEMP/key"; test $? -eq 0 || exit 1
