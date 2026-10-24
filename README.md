@@ -47,7 +47,7 @@ fitted.tabpfn_fit (zip)
   training table  executor_state.joblib:ensemble_members[*].X_train  300 rows x 10 or 4 columns  (8 alike)
     why: the 1-D array executor_state.joblib:ensemble_members[*].y_train has one entry per row
     why: X_train is a name libraries use for training rows
-    fix: TabPFN keeps the rows in its default fit mode. From tabpfn 9.1.0, fit_mode='fit_with_cache' drops them but keeps a key-value cache derived from them and the smallest and largest value of each column: keep this file as confidential as the data it was fitted on.
+    fix: TabPFN keeps the rows in its default fit mode. From tabpfn 9.1.0, fit_mode='fit_with_cache' drops them but keeps a key-value cache derived from them, and every value of each column, sorted column by column, with the default weights; the smallest and largest value of each column with the v2 weights: keep this file as confidential as the data it was fitted on.
 
 tabicl-cache.pkl (pickle)
   key-value cache  model_kv_cache_  300 rows x 3 columns
@@ -131,6 +131,7 @@ tabcustody discovers the table without being handed the training data, covers th
 | Scanning imports no model library | `test_safety.py::test_scanning_imports_neither_torch_nor_xgboost` |
 | The training table of TabICL, TabPFN v2, TabPFN v3.5 and TabDPT is found | `test_detection.py::test_the_training_table_of_each_in_context_model_is_found` (TabPFN and TabDPT files are too large to version: marked `integration`), `test_formats.py::test_a_tabpfn_fit_archive_is_scanned_member_by_member` |
 | A TabICL file saved with `save_training_data=False` is reported for its key-value cache | `test_detection.py::test_a_tabicl_key_value_cache_is_reported_as_the_training_rows_it_was_built_from`, `::test_a_tabicl_file_saved_without_its_training_data_still_reports_its_cache` (marked `integration`) |
+| A TabPFN file fitted with `fit_mode="fit_with_cache"` (tabpfn 9.1.0 and later) is reported for its key-value cache, quantized to 8 bits or not | `test_detection.py::test_a_tabpfn_key_value_cache_is_reported_as_the_training_rows_it_was_built_from`, `::test_a_tabpfn_file_fitted_with_cache_reports_its_cache` (marked `integration`) |
 | Instance-based models (k-nearest-neighbours, SVM) are reported | `test_detection.py::test_instance_based_models_are_reported_like_sacroml_does` |
 | No finding on XGBoost, LightGBM, logistic regression, random forest, gradient boosting, a 100×100 MLP or a QuantileTransformer pipeline | `test_detection.py::test_classic_models_report_no_table`, `::test_a_square_weight_matrix_next_to_its_bias_is_not_a_table`, `::test_a_quantile_grid_beside_its_levels_is_not_a_table` |
 | A table kept as a pandas DataFrame, pickled by pandas 2 or 3, is found and rebuilt in its column order | `test_detection.py::test_a_table_kept_as_a_pandas_dataframe_is_found`, `::test_a_dataframe_is_rebuilt_column_by_column_in_its_own_order` |
@@ -146,7 +147,7 @@ tabcustody discovers the table without being handed the training data, covers th
 - **A one-column table stored in sorted order** is taken for a lookup grid, such as QuantileTransformer's quantiles, and not reported.
 - **Only numeric columns are read.** Text and category columns of a DataFrame stay in the file but are not part of the reported shape.
 - **Reversal covers scikit-learn's StandardScaler, MinMaxScaler and RobustScaler**, when the scaler sits beside the table or is the pipeline step right before it. Tables behind other transforms are still reported; they are not called reversible.
-- **Caches.** TabICL's key-value cache is reported. TabPFN's, kept in `fit_mode="fit_with_cache"` by tabpfn 9.1.0 and later, is not: whether its rows can be rebuilt has not been measured.
+- **Caches.** The key-value caches of TabICL and of TabPFN 9.1.0 and later are reported. They are recognised by the names of their classes: a cache from another library, or from a release that renames them, is not. Whether TabPFN's rows can be rebuilt from its cache has not been measured.
 - **Formats.** Not read: lz4-compressed joblib, safetensors, ONNX, `torch.save` archives. PyTorch tensors inside a pickle stay opaque placeholders.
 - **Memory.** The whole object tree is loaded: scanning the 836 MB TabPFN v3.5 pickle peaks at about the size of the file.
 

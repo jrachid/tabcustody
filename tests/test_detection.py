@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from tabcustody._detect import as_table, find_tables
-from tabcustody._reader import _shell_class, read
+from tabcustody._reader import _shell_class, read, read_members
 
 FIXTURES = Path(__file__).parent / "fixtures"
 ROWS = 300
@@ -73,6 +73,75 @@ def test_a_tabicl_file_saved_without_its_training_data_still_reports_its_cache()
 
     assert [(finding.path, finding.shape, finding.kind) for finding in found] == [
         ("model_kv_cache_", (ROWS, 3), "key-value cache")
+    ]
+
+
+def tabpfn_fitted_with_cache(entry="KVCacheEntry", columns=3):
+    entries = {}
+    for layer in range(2):
+        entries[layer] = _shell_class(f"tabpfn.architectures.kv_cache.{entry}")()
+        entries[layer].attributes.update(key=None, value=None)
+    cache = _shell_class("tabpfn.architectures.tabpfn_v2.TabPFNV2Cache")()
+    cache.attributes.update(kv=entries, train_shape=(1, ROWS))
+    executor = _shell_class("tabpfn.inference.InferenceEngineExplicitKVCache")()
+    executor.attributes.update(kv_caches=[cache, cache])
+    if columns is not None:
+        schema = _shell_class("tabpfn.preprocessing.datamodel.FeatureSchema")()
+        schema.attributes.update(features=[object()] * columns)
+        preprocessor = _shell_class("tabpfn.preprocessing.ensemble.TabPFNEnsemblePreprocessor")()
+        preprocessor.attributes.update(feature_schema=schema)
+        executor.attributes.update(ensemble_preprocessor=preprocessor)
+    return executor
+
+
+@pytest.mark.parametrize("entry", ["KVCacheEntry", "QuantizedKVCacheEntry"])
+def test_a_tabpfn_key_value_cache_is_reported_as_the_training_rows_it_was_built_from(entry):
+    found = find_tables(tabpfn_fitted_with_cache(entry))
+
+    assert [(finding.path, finding.shape, finding.kind) for finding in found] == [
+        ("kv_caches", (ROWS, 3), "key-value cache")
+    ]
+    assert "TabPFN" in found[0].evidence[0]
+
+
+def test_a_quantized_tabpfn_cache_says_it_is_quantized():
+    found = find_tables(tabpfn_fitted_with_cache("QuantizedKVCacheEntry"))
+
+    assert any("8 bits" in reason for reason in found[0].evidence)
+
+
+def test_a_tabpfn_cache_without_its_feature_schema_is_still_reported_by_its_rows():
+    found = find_tables(tabpfn_fitted_with_cache(columns=None))
+
+    assert [(finding.path, finding.shape) for finding in found] == [("kv_caches", (ROWS,))]
+
+
+TABPFN_CACHE_FILES = [
+    pytest.param(f"tabpfn-{weights}-cache.{suffix}", id=f"{weights}-{suffix}")
+    for weights, suffix in [
+        ("v2", "tabpfn_fit"),
+        ("v2", "pkl"),
+        ("v3.5", "tabpfn_fit"),
+        ("v3.5-adaptive", "tabpfn_fit"),
+    ]
+]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("name", TABPFN_CACHE_FILES)
+def test_a_tabpfn_file_fitted_with_cache_reports_its_cache(name):
+    path = FIXTURES / "large" / name
+    if not path.exists():
+        pytest.skip(f"{path} is built by `tests/fixtures/build.py --tabpfn-cache`")
+
+    found = [
+        finding
+        for member, tree in read_members(path)[1]
+        for finding in find_tables(tree, prefix=f"{member}:" if member else "")
+    ]
+
+    assert [(finding.path.split(":")[-1], finding.shape, finding.kind) for finding in found] == [
+        (("" if name.endswith("fit") else "executor_.") + "kv_caches", (ROWS, 3), "key-value cache")
     ]
 
 

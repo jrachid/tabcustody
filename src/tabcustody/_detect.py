@@ -19,7 +19,9 @@ TRAINING_NAMES = frozenset(
 
 @dataclass(frozen=True)
 class Finding:
-    """A 2-D numeric array judged to hold training rows, or a cache built from them; `companion` is the 1-D array with one entry per row, if any."""
+    """A 2-D numeric array judged to hold training rows, or a cache built from them; `companion` is the 1-D array with one entry per row, if any.
+
+    `shape` is (rows,) for a cache whose columns the file does not record."""
 
     path: str
     shape: tuple[int, ...]
@@ -103,9 +105,11 @@ def as_vector(node: Any) -> np.ndarray | None:
 
 
 _TABICL_CACHE = "tabicl._model.kv_cache.TabICLCache"
+_TABPFN_ENTRY = "tabpfn.architectures.kv_cache.KVCacheEntry"
+_TABPFN_QUANTIZED_ENTRY = "tabpfn.architectures.kv_cache.QuantizedKVCacheEntry"
 
 
-def _cache_shape(node: Any) -> tuple[int, int] | None:
+def _tabicl_cache(node: Any) -> tuple[int, int] | None:
     """Returns the rows and columns a dict of TabICL caches was built from, as their train_shape records them."""
     if not isinstance(node, dict) or not node:
         return None
@@ -118,6 +122,55 @@ def _cache_shape(node: Any) -> tuple[int, int] | None:
             return None
         shapes.add((int(shape[-2]), int(shape[-1])))
     return shapes.pop() if len(shapes) == 1 else None
+
+
+def _tabpfn_cache(node: Any) -> tuple[int, set[str]] | None:
+    """Returns the rows a list of TabPFN caches was built from, as their train_shape records them, and the classes of their entries."""
+    if not isinstance(node, list) or not node:
+        return None
+    rows, entries = set(), set()
+    for cache in node:
+        if not (isinstance(cache, Shell) and cache.name.startswith("tabpfn.architectures.")):
+            return None
+        layers, shape = cache.attributes.get("kv"), cache.attributes.get("train_shape")
+        if not isinstance(layers, dict) or not layers or not isinstance(shape, tuple | list):
+            return None
+        names = {entry.name if isinstance(entry, Shell) else "" for entry in layers.values()}
+        if not names <= {_TABPFN_ENTRY, _TABPFN_QUANTIZED_ENTRY}:
+            return None
+        rows.add(int(shape[-1]))
+        entries |= names
+    return (rows.pop(), entries) if len(rows) == 1 else None
+
+
+def _tabpfn_columns(executor: Any) -> int | None:
+    """Returns how many columns the TabPFN model was fitted on, as its ensemble preprocessor's feature schema lists them."""
+    preprocessor = (
+        executor.attributes.get("ensemble_preprocessor") if isinstance(executor, Shell) else None
+    )
+    schema = (
+        preprocessor.attributes.get("feature_schema") if isinstance(preprocessor, Shell) else None
+    )
+    features = schema.attributes.get("features") if isinstance(schema, Shell) else None
+    return len(features) if isinstance(features, list) else None
+
+
+def _cache(node: Any, child: Any) -> tuple[tuple[int, ...], tuple[str, ...]] | None:
+    """Returns the shape of the training rows `child`, an attribute of `node`, caches, and why it is a cache."""
+    tabicl = _tabicl_cache(child)
+    if tabicl is not None:
+        return tabicl, ("TabICL's in-context cache keeps one key and one value per training row",)
+    tabpfn = _tabpfn_cache(child)
+    if tabpfn is None:
+        return None
+    rows, entries = tabpfn
+    columns = _tabpfn_columns(node)
+    evidence = [
+        "TabPFN's in-context cache keeps one key and one value per training row, in every layer"
+    ]
+    if _TABPFN_QUANTIZED_ENTRY in entries:
+        evidence.append("its keys and values are quantized to 8 bits, still one per training row")
+    return ((rows,) if columns is None else (rows, columns)), tuple(evidence)
 
 
 def _is_lookup_grid(array: np.ndarray) -> bool:
@@ -200,7 +253,7 @@ def _attach_scalers(
 
 
 def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding]:
-    """Returns the training tables in `tree`: 2-D numeric arrays beside a 1-D array of the same length, TabICL caches, then copies of the tables."""
+    """Returns the training tables in `tree`: 2-D numeric arrays beside a 1-D array of the same length, TabICL and TabPFN caches, then copies of the tables."""
 
     def _clean(path: str) -> str:
         return prefix + path.removeprefix(".")
@@ -216,14 +269,14 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
             scalers.append((_clean(path), node))
         siblings = _named_children(node)
         for name, child in siblings:
-            cached = _cache_shape(child)
-            if cached is not None and cached[0] >= min_rows:
+            cached = _cache(node, child)
+            if cached is not None and cached[0][0] >= min_rows:
                 tables.append(
                     Finding(
                         _clean(path + name),
-                        cached,
+                        cached[0],
                         None,
-                        ("TabICL's in-context cache keeps one key and one value per training row",),
+                        cached[1],
                         owner=node.name if isinstance(node, Shell) else None,
                         cache=True,
                     )

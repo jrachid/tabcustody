@@ -1,6 +1,7 @@
 """Writes the reference model files the test suite scans, fitted on the 300 synthetic customers of customers.py.
 
-Run with the comparisons environment: `~/.venvs/tabcustody-comparisons/bin/python tests/fixtures/build.py [--large]`."""
+Run with the comparisons environment: `~/.venvs/tabcustody-comparisons/bin/python tests/fixtures/build.py [--large]`.
+The TabPFN cache-mode files need tabpfn 9.1.0 or later: `~/.venvs/tabcustody-tabpfn-9.2/bin/python tests/fixtures/build.py --tabpfn-cache`."""
 
 import json
 import pickle
@@ -45,6 +46,16 @@ def build(name: str):
         from tabpfn import TabPFNClassifier
 
         return TabPFNClassifier(device="cpu").fit(X, y)
+    if name.startswith("tabpfn-") and name.endswith("-cache"):
+        from tabpfn import TabPFNClassifier
+        from tabpfn.constants import ModelVersion
+
+        weights, _, precision = name.removeprefix("tabpfn-").removesuffix("-cache").partition("-")
+        options = {"device": "cpu", "fit_mode": "fit_with_cache"}
+        options["kv_cache_precision"] = precision or None
+        if weights == "v2":
+            return TabPFNClassifier.create_default_for_version(ModelVersion.V2, **options).fit(X, y)
+        return TabPFNClassifier(**options).fit(X, y)
     if name == "tabdpt":
         from tabdpt import TabDPTClassifier
 
@@ -138,6 +149,29 @@ SAVES = {
     ),
 }
 
+TABPFN_CACHE = {
+    "large/tabpfn-v2-cache.tabpfn_fit": ("tabpfn-v2-cache", lambda m, path: m.save_fit_state(path)),
+    "large/tabpfn-v2-cache.pkl": (
+        "tabpfn-v2-cache",
+        lambda m, path: path.write_bytes(pickle.dumps(m)),
+    ),
+    "large/tabpfn-v3.5-cache.tabpfn_fit": (
+        "tabpfn-v3.5-cache",
+        lambda m, path: m.save_fit_state(path),
+    ),
+    "large/tabpfn-v3.5-adaptive-cache.tabpfn_fit": (
+        "tabpfn-v3.5-adaptive-cache",
+        lambda m, path: m.save_fit_state(path),
+    ),
+}
+
+
+def _manifest(entries: dict) -> None:
+    path = HERE / "MANIFEST.json"
+    manifest = json.loads(path.read_text()) if path.exists() else {}
+    manifest.update(entries)
+    path.write_text(json.dumps(manifest, indent=2) + "\n")
+
 
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--one":
@@ -147,9 +181,16 @@ if __name__ == "__main__":
         target.write_bytes(pickle.dumps(build(name)))
         sys.exit()
     if len(sys.argv) == 3 and sys.argv[1] == "--save":
-        model_name, write = SAVES[sys.argv[2]]
+        model_name, write = {**SAVES, **TABPFN_CACHE}[sys.argv[2]]
         (HERE / sys.argv[2]).parent.mkdir(exist_ok=True)
         write(build(model_name), HERE / sys.argv[2])
+        sys.exit()
+    if sys.argv[1:] == ["--tabpfn-cache"]:
+        for name in TABPFN_CACHE:
+            subprocess.run([sys.executable, __file__, "--save", name], check=True)
+            print(f"wrote {name}")
+        versions = {"library": "tabpfn", "version": version("tabpfn"), "numpy": version("numpy")}
+        _manifest({name: versions for name in TABPFN_CACHE})
         sys.exit()
     wanted = {**SMALL, **(BIG if "--large" in sys.argv else {})}
     # One process per model: on macOS, fitting XGBoost and a PyTorch model in the same process segfaults.
@@ -161,8 +202,9 @@ if __name__ == "__main__":
             continue
         subprocess.run([sys.executable, __file__, "--save", name], check=True)
         print(f"wrote {name}")
-    manifest = {
-        name: {"library": lib, "version": version(lib), "numpy": version("numpy")}
-        for name, lib in SMALL.items()
-    }
-    (HERE / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    _manifest(
+        {
+            name: {"library": lib, "version": version(lib), "numpy": version("numpy")}
+            for name, lib in SMALL.items()
+        }
+    )

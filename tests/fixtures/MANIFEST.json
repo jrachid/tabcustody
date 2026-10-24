@@ -63,5 +63,25 @@
     "library": "scikit-learn",
     "version": "1.9.1",
     "numpy": "2.5.3"
+  },
+  "large/tabpfn-v2-cache.tabpfn_fit": {
+    "library": "tabpfn",
+    "version": "9.2.0",
+    "numpy": "2.5.3"
+  },
+  "large/tabpfn-v2-cache.pkl": {
+    "library": "tabpfn",
+    "version": "9.2.0",
+    "numpy": "2.5.3"
+  },
+  "large/tabpfn-v3.5-cache.tabpfn_fit": {
+    "library": "tabpfn",
+    "version": "9.2.0",
+    "numpy": "2.5.3"
+  },
+  "large/tabpfn-v3.5-adaptive-cache.tabpfn_fit": {
+    "library": "tabpfn",
+    "version": "9.2.0",
+    "numpy": "2.5.3"
   }
 }

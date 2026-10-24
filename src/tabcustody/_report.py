@@ -13,9 +13,27 @@ from tabcustody._reader import UnreadableFileError, read_members
 _KEEP_CONFIDENTIAL = "keep this file as confidential as the data it was fitted on."
 _INSTANCE_BASED = f"An instance-based model keeps training rows by design: {_KEEP_CONFIDENTIAL}"
 
-_TABICL_CACHE = (
-    "TabICL's key-value cache lets the training rows be rebuilt with the library and its public "
-    f"weights: {_KEEP_CONFIDENTIAL}"
+_COLUMN_VALUES = (
+    "every value of each column, sorted column by column, with the default weights; "
+    "the smallest and largest value of each column with the v2 weights"
+)
+
+CACHE_HINTS = (
+    (
+        "tabicl.",
+        (
+            "TabICL's key-value cache lets the training rows be rebuilt with the library and its "
+            f"public weights: {_KEEP_CONFIDENTIAL}"
+        ),
+    ),
+    (
+        "tabpfn.",
+        (
+            "TabPFN's key-value cache is derived from the training rows; whether they can be "
+            f"rebuilt from it has not been measured. The file also keeps {_COLUMN_VALUES}: "
+            f"{_KEEP_CONFIDENTIAL}"
+        ),
+    ),
 )
 
 HINTS = (
@@ -31,9 +49,8 @@ HINTS = (
         "tabpfn.",
         (
             "TabPFN keeps the rows in its default fit mode. From tabpfn 9.1.0, "
-            "fit_mode='fit_with_cache' drops them but keeps a key-value cache derived from them "
-            "and the smallest and largest value of each column: "
-            f"{_KEEP_CONFIDENTIAL}"
+            "fit_mode='fit_with_cache' drops them but keeps a key-value cache derived from them, "
+            f"and {_COLUMN_VALUES}: {_KEEP_CONFIDENTIAL}"
         ),
     ),
     ("tabdpt.", f"TabDPT has no save function and keeps its training rows: {_KEEP_CONFIDENTIAL}"),
@@ -43,11 +60,10 @@ HINTS = (
 
 
 def _hint(finding: Finding) -> str | None:
-    if finding.cache:
-        return _TABICL_CACHE
     if finding.owner is None:
         return None
-    return next((hint for prefix, hint in HINTS if finding.owner.startswith(prefix)), None)
+    hints = CACHE_HINTS if finding.cache else HINTS
+    return next((hint for prefix, hint in hints if finding.owner.startswith(prefix)), None)
 
 
 @dataclass(frozen=True)
@@ -73,7 +89,7 @@ class Report:
                 {
                     "path": finding.path,
                     "rows": finding.shape[0],
-                    "columns": finding.shape[1],
+                    "columns": finding.shape[1] if len(finding.shape) > 1 else None,
                     "kind": finding.kind,
                     "companion": finding.companion,
                     "reversible_by": finding.reversible_by,
@@ -94,10 +110,11 @@ class Report:
         for group in _alike(self.findings):
             first, kind = group[0], group[0].kind
             rows = " or ".join(sorted({str(f.shape[0]) for f in group}, key=int, reverse=True))
-            columns = " or ".join(sorted({str(f.shape[1]) for f in group}, key=int, reverse=True))
+            widths = sorted({f.shape[1] for f in group if len(f.shape) > 1}, reverse=True)
+            columns = f" x {' or '.join(map(str, widths))} columns" if widths else ""
             count = f"  ({len(group)} alike)" if len(group) > 1 else ""
             path = _pattern(first.path) if len(group) > 1 else first.path
-            lines.append(f"  {kind}  {path}  {rows} rows x {columns} columns{count}")
+            lines.append(f"  {kind}  {path}  {rows} rows{columns}{count}")
             evidence = [_pattern(reason) if len(group) > 1 else reason for reason in first.evidence]
             lines.extend(f"    why: {reason}" for reason in evidence)
             if first.hint:
