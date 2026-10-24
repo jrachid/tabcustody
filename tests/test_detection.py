@@ -200,6 +200,29 @@ def test_instance_based_models_are_reported_like_sacroml_does(name, table, compa
 
 
 @pytest.mark.parametrize(
+    ("name", "table"),
+    [
+        ("nearest-neighbors", "_fit_X"),
+        ("kernel-density", "tree_<state>[0]"),
+        ("kernel-pca", "X_fit_"),
+        ("isomap", "nbrs_._fit_X"),
+    ],
+)
+def test_models_without_a_target_are_reported_by_the_width_they_were_fitted_on(name, table):
+    found = {finding.path: finding for finding in findings(name)}
+
+    assert found[table].kind == "training table"
+    assert found[table].shape == (ROWS, 3)
+    assert any("n_features_in_" in reason for reason in found[table].evidence)
+
+
+def test_arrays_of_another_width_beside_rows_without_a_target_are_not_reported():
+    found = {finding.path for finding in findings("isomap")}
+
+    assert found == {"nbrs_._fit_X"}
+
+
+@pytest.mark.parametrize(
     ("name", "rows", "factor"),
     [
         ("gaussian-process-regressor", "X_train_", "L_"),

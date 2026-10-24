@@ -61,6 +61,7 @@ HINTS = (
     ("tabdpt.", f"TabDPT has no save function and keeps its training rows: {_KEEP_CONFIDENTIAL}"),
     ("sklearn.neighbors.", _INSTANCE_BASED),
     ("sklearn.svm.", _INSTANCE_BASED),
+    ("sklearn.decomposition._kernel_pca.", _INSTANCE_BASED),
 )
 
 

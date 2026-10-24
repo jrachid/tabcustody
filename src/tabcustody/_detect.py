@@ -32,6 +32,7 @@ class Finding:
     hint: str | None = None
     cache: bool = False
     extremes: bool = False
+    copy: bool = False
 
     @property
     def kind(self) -> str:
@@ -39,7 +40,7 @@ class Finding:
             return "column extremes"
         if self.cache:
             return "key-value cache"
-        return "training table" if self.companion else "copy"
+        return "copy" if self.copy else "training table"
 
 
 def _is_numeric(value: Any, ndim: int) -> bool:
@@ -293,8 +294,37 @@ def _attach_scalers(
     return attached
 
 
+def _fitted_width(raw: str, widths: dict[str, tuple[int, str]]) -> tuple[int, str, str] | None:
+    """Returns the n_features_in_ of the closest estimator above the raw path `raw`, with its own raw path and class."""
+    while raw:
+        raw = _parent(raw)
+        if raw in widths:
+            return widths[raw][0], raw, widths[raw][1]
+    return None
+
+
+def _copies(
+    tables: list[Finding], arrays: dict[str, np.ndarray], declared: dict[str, int | None]
+) -> list[Finding]:
+    confirmed = {
+        finding.path: finding.shape[0]
+        for finding in tables
+        if not (finding.cache or finding.extremes or finding.copy)
+    }
+    found = {finding.path for finding in tables}
+    copies = []
+    for path, array in arrays.items():
+        if path in found or _derived(array, declared.get(path)):
+            continue
+        source = next((other for other, rows in confirmed.items() if rows == array.shape[0]), None)
+        if source is not None:
+            evidence = (f"it has as many rows as the training table {source}",)
+            copies.append(Finding(path, array.shape, None, evidence, copy=True))
+    return copies
+
+
 def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding]:
-    """Returns the training tables in `tree`: 2-D numeric arrays beside a 1-D array of the same length, TabICL and TabPFN caches, column extremes, then copies of the tables."""
+    """Returns the training tables in `tree`: 2-D arrays beside a 1-D array of the same length or as wide as their estimator's n_features_in_, caches, column extremes, copies."""
 
     def _clean(path: str) -> str:
         return prefix + path.removeprefix(".")
@@ -302,13 +332,19 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
     tables: list[Finding] = []
     arrays: dict[str, np.ndarray] = {}
     declared: dict[str, int | None] = {}
+    widths: dict[str, tuple[int, str]] = {}
+    raw_paths: dict[str, str] = {}
     scalers: list[tuple[str, Shell]] = []
     for path, node in _walk(tree):
         table = as_table(node)
         if table is not None:
             arrays[_clean(path)] = table
+            raw_paths[_clean(path)] = path
         if scaler_kind(node) is not None:
             scalers.append((_clean(path), node))
+        width = _declared_width(node)
+        if width is not None and isinstance(node, Shell):
+            widths[path] = (width, node.name)
         extremes = _extremes(node)
         if extremes is not None:
             width, scaler = extremes
@@ -375,16 +411,16 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
                 )
             )
 
-    confirmed = {
-        finding.path: finding.shape[0]
-        for finding in tables
-        if not (finding.cache or finding.extremes)
-    }
+    tables += _copies(tables, arrays, declared)
+    found = {finding.path for finding in tables}
     for path, array in arrays.items():
-        if path in confirmed or _derived(array, declared.get(path)):
+        if path in found or array.shape[0] < min_rows or _is_lookup_grid(array):
             continue
-        source = next((other for other, rows in confirmed.items() if rows == array.shape[0]), None)
-        if source is not None:
-            copy_evidence = (f"it has as many rows as the training table {source}",)
-            tables.append(Finding(path, array.shape, None, copy_evidence))
+        fitted = _fitted_width(raw_paths[path], widths)
+        if fitted is None or fitted[0] != array.shape[1] or _derived(array, declared.get(path)):
+            continue
+        estimator = _clean(fitted[1]) if fitted[1] else "the model"
+        reason = f"it has {fitted[0]} columns, the n_features_in_ {estimator} declares"
+        tables.append(Finding(path, array.shape, None, (reason,), owner=fitted[2]))
+    tables += _copies(tables, arrays, declared)
     return _attach_scalers(tables, arrays, scalers)
