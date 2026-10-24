@@ -76,6 +76,39 @@ def test_a_tabicl_file_saved_without_its_training_data_still_reports_its_cache()
     ]
 
 
+def cache_of_an_unknown_class(rows=ROWS, cols=8):
+    entries = {}
+    for layer in range(2):
+        key = _shell_class("mylib.cache.Entry")()
+        tensor = _shell_class("torch._utils._rebuild_tensor_v2")(
+            None, 0, (4, rows, cols), (0, 0, 0), False, {}
+        )
+        key.attributes.update(key=tensor, value=tensor)
+        entries[layer] = key
+    holder = _shell_class("mylib.model.Classifier")()
+    holder.attributes.update(cache_={"kv": entries}, train_shape=(1, rows))
+    return holder
+
+
+def test_a_cache_of_an_unknown_class_is_found_by_its_shape():
+    found = find_tables(cache_of_an_unknown_class())
+
+    assert [(f.path, f.shape, f.kind) for f in found] == [
+        ("cache_['kv']", (ROWS,), "key-value cache")
+    ]
+    assert "not a known one" in found[0].evidence[0]
+
+
+def test_the_shape_rule_is_silent_without_a_known_row_count():
+    holder = _shell_class("mylib.model.Classifier")()
+    tensor = _shell_class("torch._utils._rebuild_tensor_v2")(
+        None, 0, (4, ROWS, 8), (0, 0, 0), False, {}
+    )
+    holder.attributes.update(cache_={"kv": {0: tensor}})
+
+    assert find_tables(holder) == []
+
+
 def tabpfn_fitted_with_cache(entry="KVCacheEntry", columns=3):
     entries = {}
     for layer in range(2):

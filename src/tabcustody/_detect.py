@@ -345,6 +345,65 @@ def _copies(
     return copies
 
 
+_REBUILD_TENSOR = "torch._utils._rebuild_tensor_v2"
+
+
+def _tensor_shape(node: Any) -> tuple[int, ...] | None:
+    """Returns the shape of a PyTorch tensor, read from its rebuild call's size argument without importing torch."""
+    if not (isinstance(node, Shell) and node.name == _REBUILD_TENSOR):
+        return None
+    for arg in node.args:
+        if isinstance(arg, tuple) and arg and all(isinstance(axis, int) for axis in arg):
+            return arg
+    return None
+
+
+def _row_counts(node: Any, min_rows: int) -> set[int]:
+    """Returns the training-row counts a node records: a 1-D array's length, a train_shape, an n_samples_fit_."""
+    if _is_numeric(node, 1) and node.shape[0] >= min_rows:
+        return {int(node.shape[0])}
+    if not isinstance(node, Shell):
+        return set()
+    counts = set()
+    shape = node.attributes.get("train_shape")
+    if isinstance(shape, tuple | list):
+        counts |= {int(axis) for axis in shape if isinstance(axis, int) and axis >= min_rows}
+    samples = node.attributes.get("n_samples_fit_")
+    if isinstance(samples, int) and samples >= min_rows:
+        counts.add(samples)
+    return counts
+
+
+def _common_ancestor(paths: list[str]) -> str:
+    """Returns the deepest path that is an ancestor of every path in `paths`, cut at a name boundary."""
+    prefix = paths[0]
+    for path in paths[1:]:
+        while not path.startswith(prefix):
+            prefix = _parent(prefix)
+    return prefix
+
+
+def _shape_cache(
+    tensors: list[tuple[str, tuple[int, ...]]], row_counts: set[int], min_rows: int
+) -> list[Finding]:
+    """Flags, as a last resort when no cache class was recognised, PyTorch tensors whose one axis is a known training-row count: the shape of a key-value cache from an unknown library."""
+    matching = [(path, shape) for path, shape in tensors if row_counts & set(shape)]
+    if not matching:
+        return []
+    rows = max(count for count in row_counts if any(count in shape for _, shape in matching))
+    if rows < min_rows:
+        return []
+    reason = (
+        f"PyTorch tensors here have an axis of {rows}, the training-row count the file records, "
+        "the shape of a key-value cache even though their class is not a known one"
+    )
+    return [
+        Finding(
+            _common_ancestor([path for path, _ in matching]), (rows,), None, (reason,), cache=True
+        )
+    ]
+
+
 def _attach_column_names(tables: list[Finding], named: dict[str, tuple[str, ...]]) -> list[Finding]:
     """Names a table's columns when the estimator that holds it directly records feature_names_in_ of the same width, never from an ancestor, so a preprocessed table keeps no names."""
     attached = []
@@ -371,11 +430,17 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
     raw_paths: dict[str, str] = {}
     named: dict[str, tuple[str, ...]] = {}
     scalers: list[tuple[str, Shell]] = []
+    tensors: list[tuple[str, tuple[int, ...]]] = []
+    row_counts: set[int] = set()
     for path, node in _walk(tree):
         table = as_table(node)
         if table is not None:
             arrays[_clean(path)] = table
             raw_paths[_clean(path)] = path
+        shape = _tensor_shape(node)
+        if shape is not None:
+            tensors.append((_clean(path), shape))
+        row_counts |= _row_counts(node, min_rows)
         names = _column_names(node)
         if names is not None:
             named[_clean(path)] = names
@@ -462,5 +527,7 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
         reason = f"it has {fitted[0]} columns, the n_features_in_ {estimator} declares"
         tables.append(Finding(path, array.shape, None, (reason,), owner=fitted[2]))
     tables += _copies(tables, arrays, declared)
+    if not any(finding.cache for finding in tables):
+        tables += _shape_cache(tensors, row_counts, min_rows)
     tables = _attach_column_names(tables, named)
     return _attach_scalers(tables, arrays, scalers)

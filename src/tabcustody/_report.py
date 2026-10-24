@@ -65,11 +65,17 @@ HINTS = (
 )
 
 
+_UNKNOWN_CACHE = (
+    "A key-value cache is derived from the training rows; whether they can be rebuilt from it "
+    f"has not been measured. {_KEEP_CONFIDENTIAL}"
+)
+
+
 def _hint(finding: Finding) -> str | None:
     if finding.extremes:
         return _EXTREMES
     if finding.owner is None:
-        return None
+        return _UNKNOWN_CACHE if finding.cache else None
     hints = CACHE_HINTS if finding.cache else HINTS
     return next((hint for prefix, hint in hints if finding.owner.startswith(prefix)), None)
 
