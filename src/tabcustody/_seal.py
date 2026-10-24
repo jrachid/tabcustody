@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import io
+import json
+import os
 import pickle
+import zipfile
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -13,10 +18,16 @@ from tabcustody._reader import read_bytes
 
 MIN_ROWS = 20
 _TABPFN_CACHE_PREFIX = "tabpfn.architectures."
+_FORMAT = "tabcustody-seal/1"
+_HKDF_INFO = b"tabcustody-seal/1"
 
 
 class CannotSeal(Exception):
     """Raised when sealing would leave training data a scan still finds, rather than write a file that only looks sealed."""
+
+
+class CannotUnseal(Exception):
+    """Raised when the key does not open the file, or the file was changed since it was sealed."""
 
 
 def _class_name(obj: Any) -> str:
@@ -157,3 +168,82 @@ def restore(model_bytes: bytes, lifted: list[Any]) -> Any:
             return lifted[int(pid)]
 
     return _Unpickler(io.BytesIO(model_bytes)).load()
+
+
+def _derive(key: bytes, salt: bytes) -> tuple[bytes, bytes, bytes, str]:
+    """Derives, from the sealing key and a salt, the encryption key, the fingerprint key, a commitment to the key, and a key id, each under its own label so none reveals another."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    material = HKDF(hashes.SHA256(), 104, salt, _HKDF_INFO).derive(key)
+    return material[:32], material[32:64], material[64:96], material[96:104].hex()
+
+
+def _hmac(fp_key: bytes, data: bytes) -> str:
+    from cryptography.hazmat.primitives import hashes, hmac
+
+    tag = hmac.HMAC(fp_key, hashes.SHA256())
+    tag.update(data)
+    return tag.finalize().hex()
+
+
+def seal(model: Any, path: str | Path, key: bytes, min_rows: int = MIN_ROWS) -> None:
+    """Writes a model file whose training data is encrypted with `key`: reloaded with the key by `unseal`, the model predicts exactly as before; without it, `tabcustody scan` finds neither a training table nor a cache. Raises CannotSeal if some training data cannot be reached."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    model_bytes, lifted = lift(model, min_rows)
+    salt = os.urandom(16)
+    enc_key, fp_key, commitment, key_id = _derive(key, salt)
+    cipher = AESGCM(enc_key)
+    objects = []
+    for slot, obj in enumerate(lifted):
+        blob = pickle.dumps(obj, protocol=pickle.DEFAULT_PROTOCOL)
+        nonce = os.urandom(12)
+        ciphertext = cipher.encrypt(nonce, blob, str(slot).encode())
+        objects.append(
+            {
+                "slot": slot,
+                "key_id": key_id,
+                "nonce": nonce.hex(),
+                "ciphertext": base64.b64encode(ciphertext).decode(),
+                "fingerprint": _hmac(fp_key, blob),
+                "table_fingerprint": None,
+            }
+        )
+    manifest = {
+        "format": _FORMAT,
+        "cipher": "AES-256-GCM",
+        "salt": salt.hex(),
+        "commitment": commitment.hex(),
+        "key_id": key_id,
+        "objects": objects,
+    }
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("model.pkl", model_bytes)
+        archive.writestr("manifest.json", json.dumps(manifest))
+
+
+def unseal(path: str | Path, key: bytes) -> Any:
+    """Rebuilds the model `seal` wrote, with `key`; raises CannotUnseal if the key is wrong or the file was changed."""
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.constant_time import bytes_eq
+
+    with zipfile.ZipFile(path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        model_bytes = archive.read("model.pkl")
+    enc_key, _, commitment, _ = _derive(key, bytes.fromhex(manifest["salt"]))
+    if not bytes_eq(commitment, bytes.fromhex(manifest["commitment"])):
+        raise CannotUnseal("the key does not open this file")
+    cipher = AESGCM(enc_key)
+    lifted: list[Any] = [None] * len(manifest["objects"])
+    for entry in manifest["objects"]:
+        ciphertext = base64.b64decode(entry["ciphertext"])
+        try:
+            blob = cipher.decrypt(
+                bytes.fromhex(entry["nonce"]), ciphertext, str(entry["slot"]).encode()
+            )
+        except InvalidTag as error:
+            raise CannotUnseal("the file was changed since it was sealed") from error
+        lifted[int(entry["slot"])] = pickle.loads(blob)
+    return restore(model_bytes, lifted)

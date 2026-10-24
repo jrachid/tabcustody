@@ -152,6 +152,10 @@ tabcustody discovers the table without being handed the training data, covers th
 | The report names the columns when the model kept their names, never a value | `test_report.py::test_the_report_names_the_columns_when_the_model_kept_their_names` |
 | joblib files, compressed or not, read like pickles | `test_formats.py::test_a_joblib_file_is_scanned_like_a_pickle`, `::test_compressed_joblib_files_are_read` |
 | The command exits 1 on a file that carries training data | `test_cli.py::test_the_command_exits_non_zero_when_a_table_is_found` |
+| A sealed model reloads and predicts as before, and a scan finds nothing in it | `test_seal.py::test_a_sealed_file_round_trips_and_a_scan_finds_nothing` |
+| A sealed file holds neither the key nor a value of the table | `test_seal.py::test_the_sealed_file_holds_neither_the_key_nor_a_value_of_the_table` |
+| A wrong key is refused before anything is rebuilt, and a changed file is refused | `test_seal.py::test_a_wrong_key_is_refused_before_anything_is_rebuilt`, `::test_a_changed_file_is_refused` |
+| The manifest does not let a held dataset be confirmed without the key | `test_seal.py::test_the_manifest_does_not_confirm_a_known_table` |
 
 ## Limits
 
@@ -168,7 +172,7 @@ tabcustody discovers the table without being handed the training data, covers th
 ## What comes next
 
 1. **Detect** — shipped in 0.1.
-2. **Separate.** Save the model without its table, and supply the table at prediction time from a place you control.
+2. **Separate** — in development on the main branch. `pip install tabcustody[seal]`, then `tabcustody.seal(model, path, key)` writes the model with its training table, copies, target, column extremes and key-value cache encrypted (AES-256-GCM, with a commitment to the key so a file cannot be made to open under two keys); `tabcustody.unseal(path, key)` reloads it to predict exactly as before. Without the key a scan finds neither a table nor a cache. A model that keeps its rows only inside a C object's state, such as KernelDensity's KD tree, is refused rather than half-sealed. The `tabcustody seal` command and a release come next.
 3. **Erase.** Find a person's rows, remove them, refit, and keep a record that proves it — an erasure request under GDPR article 17 becomes a routine operation with these models, where classic models would need retraining.
 4. **Trace and verify.** Know which exact table was in place for any past prediction, and check that production predicts like development.
 

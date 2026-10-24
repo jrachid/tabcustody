@@ -101,3 +101,107 @@ def test_a_table_nested_in_a_pipeline_is_sealed_and_restored():
 
     assert find_tables(read_bytes(model_bytes)) == []
     assert np.array_equal(back.steps[1][1]._fit_X, model.steps[1][1]._fit_X)
+
+
+def test_a_sealed_file_round_trips_and_a_scan_finds_nothing(tmp_path):
+    from tabcustody import scan_file, seal, unseal
+
+    model = Estimator()
+    path = tmp_path / "model.sealed"
+    key = b"\x01" * 32
+
+    seal(model, path, key)
+    report = scan_file(path)
+    back = unseal(path, key)
+
+    assert not report.carries_training_data
+    assert report.error is None
+    assert np.array_equal(back._fit_X, model._fit_X)
+    assert back._tree.data is back._fit_X
+
+
+def test_the_sealed_file_holds_neither_the_key_nor_a_value_of_the_table(tmp_path):
+    from tabcustody import seal
+
+    model = Estimator()
+    path = tmp_path / "model.sealed"
+    key = b"secret-key-of-32-bytes-exactly!!"
+
+    seal(model, path, key)
+    blob = path.read_bytes()
+
+    assert key not in blob
+    assert model._fit_X[0].tobytes() not in blob
+
+
+def test_a_wrong_key_is_refused_before_anything_is_rebuilt(tmp_path):
+    from tabcustody import CannotUnseal, seal, unseal
+
+    path = tmp_path / "model.sealed"
+    seal(Estimator(), path, b"\x01" * 32)
+
+    try:
+        unseal(path, b"\x02" * 32)
+        raise AssertionError("a wrong key should be refused")
+    except CannotUnseal as error:
+        assert "key" in str(error)
+
+
+def test_a_changed_file_is_refused(tmp_path):
+    import json
+    import zipfile
+
+    from tabcustody import CannotUnseal, seal, unseal
+
+    path = tmp_path / "model.sealed"
+    key = b"\x01" * 32
+    seal(Estimator(), path, key)
+
+    with zipfile.ZipFile(path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        model_bytes = archive.read("model.pkl")
+    flipped = bytearray(__import__("base64").b64decode(manifest["objects"][0]["ciphertext"]))
+    flipped[0] ^= 1
+    manifest["objects"][0]["ciphertext"] = __import__("base64").b64encode(bytes(flipped)).decode()
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("model.pkl", model_bytes)
+        archive.writestr("manifest.json", json.dumps(manifest))
+
+    try:
+        unseal(path, key)
+        raise AssertionError("a changed file should be refused")
+    except CannotUnseal as error:
+        assert "changed" in str(error)
+
+
+def test_the_manifest_does_not_confirm_a_known_table(tmp_path):
+    import hashlib
+    import pickle
+    import zipfile
+
+    from tabcustody import seal
+
+    model = Estimator()
+    path = tmp_path / "model.sealed"
+    seal(model, path, b"\x01" * 32)
+
+    with zipfile.ZipFile(path) as archive:
+        manifest = archive.read("manifest.json").decode()
+    plain = hashlib.sha256(pickle.dumps(model._fit_X, protocol=pickle.DEFAULT_PROTOCOL)).hexdigest()
+
+    assert plain not in manifest
+
+
+def test_scanning_imports_no_cryptography(tmp_path):
+    import subprocess
+    import sys
+
+    path = tmp_path / "x.pkl"
+    path.write_bytes(__import__("pickle").dumps({"a": 1}))
+    probe = (
+        f"import sys; from tabcustody import scan_file; scan_file({str(path)!r}); "
+        "print('cryptography' in sys.modules)"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
+
+    assert out.stdout.strip() == "False"
