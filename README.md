@@ -149,7 +149,9 @@ tabcustody scan model.sealed      # exits 0: no training table, no cache
 tabcustody unseal model.sealed restored.pkl --key-file key
 ```
 
-Each object is encrypted with AES-256-GCM under a key derived from yours by HKDF. The file commits to the key, so a wrong key is refused before anything is decrypted and a file cannot be crafted to open under two keys; a changed file is refused; the manifest fingerprints are keyed, so a held dataset cannot be confirmed against the file without the key. The key is never written. `seal` reads, and so runs, the model's own pickle, and `unseal` does too: use them on your own files. A model that keeps its rows only inside a C object's state, such as KernelDensity's KD tree, is refused rather than half-sealed.
+The sealed file is a zip of two members: `model.pkl`, the model pickled with a numbered reference in place of each lifted object, and `manifest.json`, which holds those objects encrypted. Each object is encrypted with AES-256-GCM under a key derived from yours by HKDF, bound to its slot number. The file commits to the key, so a wrong key is refused before anything is decrypted and a file cannot be crafted to open under two keys. The whole file is then authenticated: `unseal` checks a keyed tag over `model.pkl` and the manifest together, and refuses a changed file — a flipped ciphertext or a replaced `model.pkl` — before it decrypts or unpickles anything, so a tampered file cannot run code. The manifest fingerprints are keyed too, so a held dataset cannot be confirmed against the file without the key. The key is never written. `seal` reads, and so runs, the model's own pickle; `unseal` runs the model it rebuilds, which the tag has just vouched for: use both on your own files. A model that keeps its rows only inside a C object's state, such as KernelDensity's KD tree, is refused rather than half-sealed.
+
+The `seal` and `unseal` commands exit with 0 on success, 2 when no key is given, and 3 when a model cannot be sealed or a file cannot be opened with the key.
 
 ## Guarantees and the tests that prove them
 
@@ -176,7 +178,7 @@ Each object is encrypted with AES-256-GCM under a key derived from yours by HKDF
 | The command exits 1 on a file that carries training data | `test_cli.py::test_the_command_exits_non_zero_when_a_table_is_found` |
 | A sealed model reloads and predicts as before, and a scan finds nothing in it | `test_seal.py::test_a_sealed_file_round_trips_and_a_scan_finds_nothing` |
 | A sealed file holds neither the key nor a value of the table | `test_seal.py::test_the_sealed_file_holds_neither_the_key_nor_a_value_of_the_table` |
-| A wrong key is refused before anything is rebuilt, and a changed file is refused | `test_seal.py::test_a_wrong_key_is_refused_before_anything_is_rebuilt`, `::test_a_changed_file_is_refused` |
+| A wrong key is refused before anything is rebuilt, and a changed file — a ciphertext or the model skeleton — is refused before it is unpickled | `test_seal.py::test_a_wrong_key_is_refused_before_anything_is_rebuilt`, `::test_a_changed_file_is_refused`, `::test_a_replaced_model_skeleton_is_refused_and_not_run` |
 | The manifest does not let a held dataset be confirmed without the key | `test_seal.py::test_the_manifest_does_not_confirm_a_known_table` |
 
 ## Limits
@@ -188,13 +190,14 @@ Each object is encrypted with AES-256-GCM under a key derived from yours by HKDF
 - **Reversal covers scikit-learn's StandardScaler, MinMaxScaler and RobustScaler**, when the scaler sits beside the table or is the pipeline step right before it, and **PowerTransformer and QuantileTransformer** when they are the pipeline step right before it. The quantile inverse is close but not exact: a value outside the learned quantiles is clipped and does not come back to the cent. Tables behind other transforms are still reported; they are not called reversible.
 - **Caches.** The key-value caches of TabICL and of TabPFN 9.1.0 and later are reported, recognised by the names of their classes. A cache whose classes are not known is still reported when it holds PyTorch tensors with an axis equal to a training-row count the file records; one that keeps no such tensor, or whose row count the file does not record, is not. Whether TabPFN's rows can be rebuilt from its cache has not been measured.
 - **Column extremes** are recognised as `X_min_` and `X_max_` beside a scaler of the same width, as TabICL stores them. Others are not reported: those of MinMaxScaler (`data_min_`, `data_max_`), and those TabPFN v2 keeps in the first and last rows of a quantile grid.
+- **Seal** lifts what the scanner would report from a live model and nothing else: data the scanner does not recognise, such as a table under `--min-rows` or a cache of an unknown class without a per-row axis, stays in `model.pkl` in clear. Sealing loads the model, so it needs the model's libraries installed, unlike the scan.
 - **Formats.** Not read: lz4-compressed joblib, safetensors, ONNX, `torch.save` archives. PyTorch tensors inside a pickle stay opaque placeholders.
 - **Memory.** The object tree is read without the weights: the bytes of a PyTorch storage are skipped and replaced by a placeholder that keeps their length, so scanning the 836 MB TabPFN v3.5 pickle peaks at about 40 MB. A large table stored as a NumPy array is still read in full, since it is what the scanner looks for.
 
 ## What comes next
 
 1. **Detect** — shipped in 0.1.
-2. **Separate** — on the main branch, releasing in 0.3. `seal` and `unseal`, as the Python API and the `tabcustody seal`/`unseal` commands, move the training data under a key (see above).
+2. **Separate** — shipped in 0.3. `seal` and `unseal`, as the Python API and the `tabcustody seal`/`unseal` commands, move the training data under a key (see above).
 3. **Erase.** Find a person's rows, remove them, refit, and keep a record that proves it — an erasure request under GDPR article 17 becomes a routine operation with these models, where classic models would need retraining.
 4. **Trace and verify.** Know which exact table was in place for any past prediction, and check that production predicts like development.
 

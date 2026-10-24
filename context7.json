@@ -3,16 +3,24 @@
   "url": "https://context7.com/jrachid/tabcustody",
   "public_key": "pk_selBskjkuL6wMwRQ1GBDF",
   "projectTitle": "tabcustody",
-  "description": "Tell whether a saved TabPFN, TabICL or TabDPT model file carries its training data, without running the file",
+  "description": "Tell whether a saved TabPFN, TabICL or TabDPT model file carries its training data, without running the file, and seal that data under a key",
   "folders": [],
-  "excludeFolders": ["tests", "ci", "src", ".github", "comparisons"],
+  "excludeFolders": [
+    "tests",
+    "ci",
+    "src",
+    ".github",
+    "comparisons"
+  ],
   "excludeFiles": [],
   "rules": [
     "Scan a saved TabPFN, TabICL or TabDPT model file with the tabcustody scan command or the scan_file function before sharing it, because these models keep their training rows inside the file",
     "The scan never runs the file and never imports the model libraries, so it is safe on model files from unknown sources",
     "The tabcustody scan command exits with 1 when a file carries training data, 2 when a file cannot be read and 0 otherwise, so a CI job can block a model file",
     "Use report.carries_training_data and report.findings from scan_file, and print report.to_text or report.to_dict, which never contain a value of the table",
-    "To save a TabICL model without its training rows, fit it with kv_cache set to True and save it with save_training_data set to False",
-    "A table is recognised by the target array stored beside it, so rows kept without a target, or tables under twenty rows, are not reported"
+    "Saving TabICL with save_training_data set to False, or TabPFN with fit_mode set to fit_with_cache, drops the table but keeps a key-value cache derived from its rows, which tabcustody scan still reports; TabICL's rows can be rebuilt from that cache",
+    "To ship a model without its training data in clear, install tabcustody[seal] and call seal(model, path, key) or run tabcustody seal model.pkl model.sealed --key-file key; unseal(path, key) gives back a model that predicts exactly as before",
+    "seal and unseal load model pickles and so run them: use them only on your own files; unseal checks a keyed tag over the whole sealed file and refuses a changed one before unpickling, so a tampered sealed file cannot run code",
+    "A table is recognised by the target array stored beside it or by the n_features_in_ of the estimator that holds it, so tables under twenty rows are not reported"
   ]
 }
