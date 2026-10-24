@@ -78,3 +78,23 @@ def test_a_scaler_nested_inside_another_transformer_is_not_credited():
     assert {finding.reversible_by for finding in found if finding.extremes} == {
         "ensemble_generator_.preprocessors_['power'].standard_scaler_"
     }
+
+
+def test_a_power_transformed_table_is_rebuilt_to_the_cent():
+    tree = read(FIXTURES / "power-kneighbors.pkl")
+    found = {finding.path: finding for finding in find_tables(tree)}
+
+    table = found["steps[1][1]._fit_X"]
+    assert table.reversible_by == "steps[0][1]"
+    np.testing.assert_allclose(rebuilt(tree, table), ORIGINAL, rtol=0, atol=1e-6)
+
+
+def test_a_quantile_transformed_table_is_rebuilt_closely():
+    tree = read(FIXTURES / "quantile-kneighbors.pkl")
+    found = {finding.path: finding for finding in find_tables(tree)}
+
+    table = found["steps[1][1]._fit_X"]
+    assert table.reversible_by == "steps[0][1]"
+    rebuilt_rows = rebuilt(tree, table)
+    relative = np.abs(rebuilt_rows - ORIGINAL) / np.abs(ORIGINAL)
+    assert (relative < 0.01).mean() > 0.95

@@ -262,15 +262,25 @@ def _parent(path: str) -> str:
     return path[: max(path.rfind("."), path.rfind("["), 0)]
 
 
-def _feeds(scaler_path: str, table_path: str) -> bool:
-    """Tells whether the scaler sits beside the table's owner, or is the pipeline step right before it."""
-    owner = _parent(table_path)
-    if _parent(scaler_path) == owner:
-        return True
-    step = _PIPELINE_STEP.match(owner)
+def _pipeline_step_before(scaler_path: str, table_path: str) -> bool:
+    step = _PIPELINE_STEP.match(_parent(table_path))
     if step is None:
         return False
     return scaler_path == f"{step['pipeline']}[{int(step['index']) - 1}][1]"
+
+
+# A power or quantile transform is credited only as a pipeline's last step before the table: beside another
+# table it cannot be told from the scaler that the transform's own output was then fed to.
+_PIPELINE_ONLY = ("PowerTransformer", "QuantileTransformer")
+
+
+def _feeds(scaler_path: str, table_path: str, kind: str | None) -> bool:
+    """Tells whether the scaler sits beside the table's owner, or is the pipeline step right before it."""
+    if _pipeline_step_before(scaler_path, table_path):
+        return True
+    if kind in _PIPELINE_ONLY:
+        return False
+    return _parent(scaler_path) == _parent(table_path)
 
 
 def _attach_scalers(
@@ -284,7 +294,8 @@ def _attach_scalers(
         feeding = [
             (path, scaler)
             for path, scaler in scalers
-            if _feeds(path, finding.path) and produced(arrays[finding.path], scaler)
+            if _feeds(path, finding.path, scaler_kind(scaler))
+            and produced(arrays[finding.path], scaler)
         ]
         if len(feeding) != 1:
             attached.append(finding)
