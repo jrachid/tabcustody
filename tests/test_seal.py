@@ -2,7 +2,7 @@ import numpy as np
 
 from tabcustody._detect import find_tables
 from tabcustody._reader import read_bytes
-from tabcustody._seal import lift, restore, training_arrays
+from tabcustody._seal import lift, restore, sealable_objects
 
 ROWS = 300
 
@@ -26,11 +26,43 @@ class Pipeline:
         self.steps = [("scale", object()), ("knn", Estimator())]
 
 
-def test_the_training_table_and_its_target_are_found_in_a_live_model():
-    arrays = training_arrays(Estimator())
+class Unsupervised:
+    def __init__(self):
+        self._fit_X = np.arange(ROWS * 3, dtype=float).reshape(ROWS, 3)
+        self.n_features_in_ = 3
 
-    shapes = sorted((a.shape for a in arrays), key=len)
+
+class WithExtremes:
+    def __init__(self):
+        self.X_min_ = np.zeros((1, 3))
+        self.X_max_ = np.ones((1, 3))
+        self.X_transformed_ = np.arange(ROWS * 3, dtype=float).reshape(ROWS, 3)
+        self._fit_X = self.X_transformed_
+        self._y = np.arange(ROWS)
+
+
+def test_the_training_table_and_its_target_are_found_in_a_live_model():
+    shapes = sorted((a.shape for a in sealable_objects(Estimator())), key=len)
+
     assert (ROWS,) in shapes and (ROWS, 3) in shapes
+
+
+def test_a_target_less_model_is_sealed_by_its_declared_width():
+    model = Unsupervised()
+
+    model_bytes, lifted = lift(model)
+
+    assert [a.shape for a in lifted] == [(ROWS, 3)]
+    assert find_tables(read_bytes(model_bytes)) == []
+
+
+def test_column_extremes_and_a_transformed_copy_are_lifted_too():
+    model = WithExtremes()
+
+    model_bytes, lifted = lift(model)
+
+    assert {a.shape for a in lifted} == {(1, 3), (ROWS, 3), (ROWS,)}
+    assert find_tables(read_bytes(model_bytes)) == []
 
 
 def test_the_sealed_bytes_carry_no_training_table_even_the_shared_copy():
