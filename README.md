@@ -11,7 +11,7 @@ pip install tabcustody
 tabcustody scan model.pkl other.joblib fitted.tabpfn_fit
 ```
 
-The command reads pickle files, joblib files (plain or compressed with zlib, gzip, bz2 or xz) and zip archives of them such as TabPFN's `.tabpfn_fit`. It exits with 1 when a file carries training data, 2 when a file cannot be read, 0 otherwise, so it can gate a CI job; `--json` prints one report per file.
+The command reads pickle files, joblib files (plain or compressed with zlib, gzip, bz2 or xz) and zip archives of them such as TabPFN's `.tabpfn_fit`. It exits with 1 when a file carries training data, 2 when a file cannot be read, 0 otherwise, so it can gate a CI job; the extremes of each column are reported but do not, alone, make a file carry training data, since a scaler such as MinMaxScaler keeps them in many classic pipelines; `--json` prints one report per file.
 
 From Python, with scikit-learn installed:
 
@@ -40,7 +40,7 @@ model.pkl (pickle)
     fix: An instance-based model keeps training rows by design: keep this file as confidential as the data it was fitted on.
 ```
 
-On a TabPFN archive the report names the rows of every ensemble member, and on a TabICL file saved with `save_training_data=False` it reports the key-value cache the rows can be rebuilt from:
+On a TabPFN archive the report names the rows of every ensemble member, and on a TabICL file saved with `save_training_data=False` it reports the key-value cache the rows can be rebuilt from, and the extremes of each column kept beside it:
 
 ```
 fitted.tabpfn_fit (zip)
@@ -53,6 +53,9 @@ tabicl-cache.pkl (pickle)
   key-value cache  model_kv_cache_  300 rows x 3 columns
     why: TabICL's in-context cache keeps one key and one value per training row
     fix: TabICL's key-value cache lets the training rows be rebuilt with the library and its public weights: keep this file as confidential as the data it was fitted on.
+  column extremes  ensemble_generator_.preprocessors_['power']  smallest and largest value of 3 columns
+    why: X_min_ and X_max_ keep the smallest and largest value of each column, which the scaler at ensemble_generator_.preprocessors_['power'].standard_scaler_ brings back to their scale
+    fix: The smallest and largest value of each column are the values of the people at either end of it, kept in clear even without the table: keep this file as confidential as the data it was fitted on.
 ```
 
 The scanner never unpickles the file the usual way: only NumPy arrays and plain containers are rebuilt, every other class becomes an inert placeholder, and no library the file names is imported. The report gives paths, shapes and evidence, never a value of the table.
@@ -103,7 +106,7 @@ The cache still gives the rows back. Its first block stores, for every training 
 | TabICL 2.2.0, 3 columns | 300 / 300 | 100.0% | 0.02% | 300 / 300 |
 | TabICL 2.2.0, 20 columns | 168 / 300 | 93.6% | 0.08% | 300 / 300 |
 
-Measured by [`comparisons/kv_cache_inversion.py`](comparisons/kv_cache_inversion.py), which uses the saved file, the TabICL library and its public weights, and nothing else; the original table only scores the result. No value comes back to the cent. With 20 columns the search is harder and stops short on 132 rows, though most of their cells still come back within 1%. The search is bounded by the mean and the standard deviation of every column, which the file also keeps in clear. Removing the table from the file is not enough while a cache derived from its rows stays there.
+Measured by [`comparisons/kv_cache_inversion.py`](comparisons/kv_cache_inversion.py), which uses the saved file, the TabICL library and its public weights, and nothing else; the original table only scores the result. The search gives no value back to the cent. With 20 columns it is harder and stops short on 132 rows, though most of their cells still come back within 1%. The file also keeps statistics of every column in clear: the mean and the standard deviation, which bound the search, and the smallest and the largest value, stored scaled beside the scaler that brings them back to the cent — here the ages of the youngest and the oldest customer, and the lowest and the highest income and debt. Removing the table from the file is not enough while a cache derived from its rows stays there.
 
 TabDPT offers no option to drop the table. TabPFN's `.tabpfn_fit` archive leaves out the foundation model's weights but keeps the table in the default fit mode, `fit_mode="fit_preprocessors"`. Since tabpfn 9.1.0, released on 2 October 2026, `fit_mode="fit_with_cache"` drops each ensemble member's table once its key-value cache is built ([pull request 1323](https://github.com/PriorLabs/TabPFN/pull/1323), merged for memory reasons), and predictions after reload are unchanged. What the archive keeps then depends on the weights. With the v2 weights it keeps the smallest and the largest value of every column — here the incomes of the poorest and the richest customer — and no other income beyond chance. With the default weights it keeps every income: the cache stores the values of every column, sorted column by column, each to the cent. The cache is reported by `tabcustody scan` in both; whether the rows can be rebuilt from it, as with TabICL, has not been measured.
 
@@ -135,6 +138,7 @@ tabcustody discovers the table without being handed the training data, covers th
 | The training table of TabICL, TabPFN v2, TabPFN v3.5 and TabDPT is found | `test_detection.py::test_the_training_table_of_each_in_context_model_is_found` (TabPFN and TabDPT files are too large to version: marked `integration`), `test_formats.py::test_a_tabpfn_fit_archive_is_scanned_member_by_member` |
 | A TabICL file saved with `save_training_data=False` is reported for its key-value cache | `test_detection.py::test_a_tabicl_key_value_cache_is_reported_as_the_training_rows_it_was_built_from`, `::test_a_tabicl_file_saved_without_its_training_data_still_reports_its_cache` (marked `integration`) |
 | A TabPFN file fitted with `fit_mode="fit_with_cache"` (tabpfn 9.1.0 and later) is reported for its key-value cache, quantized to 8 bits or not | `test_detection.py::test_a_tabpfn_key_value_cache_is_reported_as_the_training_rows_it_was_built_from`, `::test_a_tabpfn_file_fitted_with_cache_reports_its_cache` (marked `integration`) |
+| The smallest and largest value of each column that TabICL keeps behind its scaler are reported, with or without the table, and alone do not make the command exit 1 | `test_detection.py::test_tabicl_column_extremes_are_reported_beside_the_table`, `::test_tabicl_column_extremes_are_reported_even_without_the_table` (marked `integration`), `test_report.py::test_column_extremes_alone_do_not_mean_the_file_carries_training_data` |
 | Instance-based models (k-nearest-neighbours, SVM) are reported | `test_detection.py::test_instance_based_models_are_reported_like_sacroml_does` |
 | No finding on XGBoost, LightGBM, logistic regression, random forest, gradient boosting, a 100×100 MLP or a QuantileTransformer pipeline | `test_detection.py::test_classic_models_report_no_table`, `::test_a_square_weight_matrix_next_to_its_bias_is_not_a_table`, `::test_a_quantile_grid_beside_its_levels_is_not_a_table` |
 | A table kept as a pandas DataFrame, pickled by pandas 2 or 3, is found and rebuilt in its column order | `test_detection.py::test_a_table_kept_as_a_pandas_dataframe_is_found`, `::test_a_dataframe_is_rebuilt_column_by_column_in_its_own_order` |
@@ -151,6 +155,7 @@ tabcustody discovers the table without being handed the training data, covers th
 - **Only numeric columns are read.** Text and category columns of a DataFrame stay in the file but are not part of the reported shape.
 - **Reversal covers scikit-learn's StandardScaler, MinMaxScaler and RobustScaler**, when the scaler sits beside the table or is the pipeline step right before it. Tables behind other transforms are still reported; they are not called reversible.
 - **Caches.** The key-value caches of TabICL and of TabPFN 9.1.0 and later are reported. They are recognised by the names of their classes: a cache from another library, or from a release that renames them, is not. Whether TabPFN's rows can be rebuilt from its cache has not been measured.
+- **Column extremes** are recognised as `X_min_` and `X_max_` beside a scaler of the same width, as TabICL stores them. Others are not reported: those of MinMaxScaler (`data_min_`, `data_max_`), and those TabPFN v2 keeps in the first and last rows of a quantile grid.
 - **Formats.** Not read: lz4-compressed joblib, safetensors, ONNX, `torch.save` archives. PyTorch tensors inside a pickle stay opaque placeholders.
 - **Memory.** The whole object tree is loaded: scanning the 836 MB TabPFN v3.5 pickle peaks at about the size of the file.
 

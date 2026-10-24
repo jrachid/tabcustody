@@ -72,4 +72,9 @@ def test_a_scaler_nested_inside_another_transformer_is_not_credited():
     power = node(tree, "ensemble_generator_.preprocessors_['power']")
 
     assert power.attributes["normalizer_"].attributes["_scaler"].name.endswith("StandardScaler")
-    assert all(finding.reversible_by is None for finding in find_tables(tree))
+    found = find_tables(tree)
+
+    assert all(finding.reversible_by is None for finding in found if not finding.extremes)
+    assert {finding.reversible_by for finding in found if finding.extremes} == {
+        "ensemble_generator_.preprocessors_['power'].standard_scaler_"
+    }

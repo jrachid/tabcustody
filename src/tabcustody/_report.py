@@ -18,6 +18,11 @@ _COLUMN_VALUES = (
     "the smallest and largest value of each column with the v2 weights"
 )
 
+_EXTREMES = (
+    "The smallest and largest value of each column are the values of the people at either end "
+    f"of it, kept in clear even without the table: {_KEEP_CONFIDENTIAL}"
+)
+
 CACHE_HINTS = (
     (
         "tabicl.",
@@ -60,6 +65,8 @@ HINTS = (
 
 
 def _hint(finding: Finding) -> str | None:
+    if finding.extremes:
+        return _EXTREMES
     if finding.owner is None:
         return None
     hints = CACHE_HINTS if finding.cache else HINTS
@@ -77,7 +84,7 @@ class Report:
 
     @property
     def carries_training_data(self) -> bool:
-        return bool(self.findings)
+        return any(not finding.extremes for finding in self.findings)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,7 +95,7 @@ class Report:
             "findings": [
                 {
                     "path": finding.path,
-                    "rows": finding.shape[0],
+                    "rows": None if finding.extremes else finding.shape[0],
                     "columns": finding.shape[1] if len(finding.shape) > 1 else None,
                     "kind": finding.kind,
                     "companion": finding.companion,
@@ -105,7 +112,7 @@ class Report:
         lines = [f"{self.path} ({self.format})"]
         if self.error:
             lines.append(f"  unreadable: {self.error}")
-        elif not self.findings:
+        elif not self.carries_training_data:
             lines.append("  no training table found")
         for group in _alike(self.findings):
             first, kind = group[0], group[0].kind
@@ -114,7 +121,10 @@ class Report:
             columns = f" x {' or '.join(map(str, widths))} columns" if widths else ""
             count = f"  ({len(group)} alike)" if len(group) > 1 else ""
             path = _pattern(first.path) if len(group) > 1 else first.path
-            lines.append(f"  {kind}  {path}  {rows} rows{columns}{count}")
+            if first.extremes:
+                lines.append(f"  {kind}  {path}  smallest and largest value of {widths[0]} columns")
+            else:
+                lines.append(f"  {kind}  {path}  {rows} rows{columns}{count}")
             evidence = [_pattern(reason) if len(group) > 1 else reason for reason in first.evidence]
             lines.extend(f"    why: {reason}" for reason in evidence)
             if first.hint:
@@ -130,9 +140,9 @@ def _pattern(text: str) -> str:
 
 
 def _alike(findings: tuple[Finding, ...]) -> list[list[Finding]]:
-    groups: dict[tuple[str, bool, str | None], list[Finding]] = {}
+    groups: dict[tuple[str, str, str | None], list[Finding]] = {}
     for finding in findings:
-        key = (_pattern(finding.path), finding.companion is None, finding.hint)
+        key = (_pattern(finding.path), finding.kind, finding.hint)
         groups.setdefault(key, []).append(finding)
     return list(groups.values())
 

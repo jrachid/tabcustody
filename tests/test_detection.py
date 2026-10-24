@@ -46,7 +46,7 @@ def test_the_training_table_of_each_in_context_model_is_found(name, large, table
     assert table in found
     assert found[table].shape[0] == ROWS
     assert found[table].companion == target
-    assert all(finding.shape[0] == ROWS for finding in found.values())
+    assert all(finding.shape[0] == ROWS for finding in found.values() if not finding.extremes)
 
 
 def tabicl_saved_with_its_cache_only():
@@ -69,7 +69,7 @@ def test_a_tabicl_key_value_cache_is_reported_as_the_training_rows_it_was_built_
 
 @pytest.mark.integration
 def test_a_tabicl_file_saved_without_its_training_data_still_reports_its_cache():
-    found = findings("tabicl-kv-cache", large=True)
+    found = [finding for finding in findings("tabicl-kv-cache", large=True) if not finding.extremes]
 
     assert [(finding.path, finding.shape, finding.kind) for finding in found] == [
         ("model_kv_cache_", (ROWS, 3), "key-value cache")
@@ -145,8 +145,45 @@ def test_a_tabpfn_file_fitted_with_cache_reports_its_cache(name):
     ]
 
 
+TABICL_EXTREMES = "ensemble_generator_.preprocessors_['power']"
+
+
+def test_tabicl_column_extremes_are_reported_beside_the_table():
+    found = [finding for finding in findings("tabicl") if finding.extremes]
+
+    assert [(finding.path, finding.shape, finding.kind) for finding in found] == [
+        (TABICL_EXTREMES, (2, 3), "column extremes")
+    ]
+    assert found[0].reversible_by == f"{TABICL_EXTREMES}.standard_scaler_"
+
+
+@pytest.mark.integration
+def test_tabicl_column_extremes_are_reported_even_without_the_table():
+    found = {finding.kind: finding for finding in findings("tabicl-kv-cache", large=True)}
+
+    assert set(found) == {"key-value cache", "column extremes"}
+    assert found["column extremes"].path == TABICL_EXTREMES
+
+
+def preprocessor_with_extremes(width=3, scaler_width=3):
+    scaler = _shell_class("tabicl._sklearn.preprocessing.CustomStandardScaler")()
+    scaler.attributes.update(mean_=np.zeros(scaler_width), scale_=np.ones(scaler_width))
+    pipeline = _shell_class("tabicl._sklearn.preprocessing.PreprocessingPipeline")()
+    pipeline.attributes.update(
+        standard_scaler_=scaler, X_min_=np.zeros((1, width)), X_max_=np.ones((1, width))
+    )
+    return pipeline
+
+
+def test_column_extremes_need_a_scaler_of_their_width():
+    assert [finding.kind for finding in find_tables(preprocessor_with_extremes())] == [
+        "column extremes"
+    ]
+    assert find_tables(preprocessor_with_extremes(scaler_width=4)) == []
+
+
 def test_a_transformed_copy_is_reported_next_to_the_table_it_copies():
-    copies = [finding for finding in findings("tabicl") if finding.companion is None]
+    copies = [finding for finding in findings("tabicl") if finding.kind == "copy"]
 
     assert copies
     assert all("ensemble_generator_.X_" in " ".join(copy.evidence) for copy in copies)

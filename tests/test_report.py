@@ -86,6 +86,25 @@ def test_a_cache_without_rows_and_columns_reports_its_rows_alone():
     assert report.to_dict()["findings"][0]["columns"] is None
 
 
+def test_column_extremes_alone_do_not_mean_the_file_carries_training_data():
+    extremes = Finding("pipeline", (2, 3), None, ("why",), extremes=True)
+    report = Report("model.pkl", "pickle", (extremes,))
+
+    assert not report.carries_training_data
+    assert "no training table found" in report.to_text()
+    assert "column extremes  pipeline  smallest and largest value of 3 columns" in report.to_text()
+    assert report.to_dict()["findings"][0]["kind"] == "column extremes"
+
+
+def test_column_extremes_say_whose_values_they_are():
+    report = scan_file(FIXTURES / "tabicl.pkl")
+
+    extremes = next(finding for finding in report.findings if finding.extremes)
+
+    assert "confidential" in extremes.hint
+    assert "save_training_data" not in extremes.hint
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("name", ["tabpfn-v2-cache.tabpfn_fit", "tabpfn-v3.5-cache.tabpfn_fit"])
 def test_a_tabpfn_file_fitted_with_cache_carries_its_training_data(name):

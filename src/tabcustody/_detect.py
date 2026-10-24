@@ -31,9 +31,12 @@ class Finding:
     owner: str | None = None
     hint: str | None = None
     cache: bool = False
+    extremes: bool = False
 
     @property
     def kind(self) -> str:
+        if self.extremes:
+            return "column extremes"
         if self.cache:
             return "key-value cache"
         return "training table" if self.companion else "copy"
@@ -173,6 +176,25 @@ def _cache(node: Any, child: Any) -> tuple[tuple[int, ...], tuple[str, ...]] | N
     return ((rows,) if columns is None else (rows, columns)), tuple(evidence)
 
 
+def _extremes(node: Any) -> tuple[int, str] | None:
+    """Returns how many columns the X_min_ and X_max_ of `node` cover, and the attribute holding the scaler that brings them back to the columns' scale."""
+    if not isinstance(node, Shell):
+        return None
+    low, high = node.attributes.get("X_min_"), node.attributes.get("X_max_")
+    if not (isinstance(low, np.ndarray) and isinstance(high, np.ndarray)):
+        return None
+    if not (_is_numeric(low, 2) and low.shape == high.shape and low.shape[0] == 1):
+        return None
+    width = low.shape[1]
+    for name, scaler in node.attributes.items():
+        if not isinstance(scaler, Shell):
+            continue
+        parts = [scaler.attributes.get(part) for part in ("mean_", "scale_")]
+        if all(isinstance(part, np.ndarray) and part.shape == (width,) for part in parts):
+            return width, name
+    return None
+
+
 def _is_lookup_grid(array: np.ndarray) -> bool:
     """Tells a lookup table, such as QuantileTransformer's quantiles_, where every column is sorted, from rows of data."""
     return array.shape[0] > 1 and bool(np.all(np.diff(array, axis=0) >= 0))
@@ -238,6 +260,9 @@ def _attach_scalers(
 ) -> list[Finding]:
     attached = []
     for finding in tables:
+        if finding.path not in arrays:
+            attached.append(finding)
+            continue
         feeding = [
             (path, scaler)
             for path, scaler in scalers
@@ -253,7 +278,7 @@ def _attach_scalers(
 
 
 def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding]:
-    """Returns the training tables in `tree`: 2-D numeric arrays beside a 1-D array of the same length, TabICL and TabPFN caches, then copies of the tables."""
+    """Returns the training tables in `tree`: 2-D numeric arrays beside a 1-D array of the same length, TabICL and TabPFN caches, column extremes, then copies of the tables."""
 
     def _clean(path: str) -> str:
         return prefix + path.removeprefix(".")
@@ -267,6 +292,24 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
             arrays[_clean(path)] = table
         if scaler_kind(node) is not None:
             scalers.append((_clean(path), node))
+        extremes = _extremes(node)
+        if extremes is not None:
+            width, scaler = extremes
+            reason = (
+                f"X_min_ and X_max_ keep the smallest and largest value of each column, "
+                f"which the scaler at {_clean(path + '.' + scaler)} brings back to their scale"
+            )
+            tables.append(
+                Finding(
+                    _clean(path),
+                    (2, width),
+                    None,
+                    (reason,),
+                    reversible_by=_clean(path + "." + scaler),
+                    owner=node.name,
+                    extremes=True,
+                )
+            )
         siblings = _named_children(node)
         for name, child in siblings:
             cached = _cache(node, child)
@@ -310,7 +353,11 @@ def find_tables(tree: Any, min_rows: int = 20, prefix: str = "") -> list[Finding
                 )
             )
 
-    confirmed = {finding.path: finding.shape[0] for finding in tables if not finding.cache}
+    confirmed = {
+        finding.path: finding.shape[0]
+        for finding in tables
+        if not (finding.cache or finding.extremes)
+    }
     for path, array in arrays.items():
         if path in confirmed:
             continue
