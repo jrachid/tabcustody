@@ -99,7 +99,7 @@ Measured by [`comparisons/builtin_saves.py`](comparisons/builtin_saves.py).
 
 TabICL's documentation presents `save_training_data=False` as giving "better data privacy": the file keeps the model's cached key-value projections of the table instead of the table, and predictions after reload are unchanged. It works only if the model was fitted with `kv_cache=True` and it is off by default. It leaves no income verbatim: the 4 matches are chance, as many as values absent from the table reach, they change from one dataset to the next, and none sits inside an array of the reloaded model.
 
-The cache still gives the rows back. Its first block stores, for every training row, keys and values that are a linear function of that row, and the weights that produced them are public, so each row's representation can be read back. The model in the file computes the same representation for any row passed to it for prediction, so a search over candidate rows finds the one that matches:
+The cache still gives the rows back. Its first block stores, for every training row, keys and values that are a linear function of that row, and the weights that produced them are public, so each row's representation can be read back. The model in the file computes the same representation for any row passed to it for prediction, so a search over candidate rows finds the one that matches, the collision attack that [Shadow in the Cache](https://arxiv.org/abs/2508.09442) (NDSS 2026) describes for the key-value caches of language models:
 
 | Model fitted with `kv_cache=True`, saved with `save_training_data=False` | Rows rebuilt within 1% | Cells within 1% | Median cell error | Labels rebuilt |
 |---|---|---|---|---|
