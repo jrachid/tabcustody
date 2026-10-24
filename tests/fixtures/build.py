@@ -96,6 +96,15 @@ def build(name: str):
         from sklearn.preprocessing import QuantileTransformer
 
         return make_pipeline(QuantileTransformer(n_quantiles=100), LogisticRegression()).fit(X, y)
+    if name in ("power-kneighbors", "quantile-kneighbors"):
+        from sklearn.neighbors import KNeighborsClassifier
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import PowerTransformer, QuantileTransformer
+
+        step = (
+            PowerTransformer() if name.startswith("power") else QuantileTransformer(n_quantiles=100)
+        )
+        return make_pipeline(step, KNeighborsClassifier()).fit(X, y)
     if name in ("standard-kneighbors", "minmax-kneighbors", "robust-kneighbors"):
         from sklearn.neighbors import KNeighborsClassifier
         from sklearn.pipeline import make_pipeline
@@ -169,6 +178,8 @@ SMALL = {
     "gaussian-process-regressor": "scikit-learn",
     "gaussian-process-classifier": "scikit-learn",
     "stacking": "scikit-learn",
+    "power-kneighbors": "scikit-learn",
+    "quantile-kneighbors": "scikit-learn",
 }
 BIG = {"tabpfn-v2": "tabpfn", "tabpfn-v3.5": "tabpfn", "tabdpt": "tabdpt"}
 

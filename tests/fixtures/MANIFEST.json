@@ -123,5 +123,15 @@
     "library": "scikit-learn",
     "version": "1.9.1",
     "numpy": "2.5.3"
+  },
+  "power-kneighbors": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
+  },
+  "quantile-kneighbors": {
+    "library": "scikit-learn",
+    "version": "1.9.1",
+    "numpy": "2.5.3"
   }
 }
