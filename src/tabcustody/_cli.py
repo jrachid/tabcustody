@@ -1,4 +1,4 @@
-"""The `tabcustody` command: scan tells whether files carry training data (exit 1), seal and unseal move that data under a key, id, prove and check-proof tie a past prediction to the rows of a sealed file, verify checks that this environment predicts as the sealing one."""
+"""The `tabcustody` command: scan tells whether files carry training data (exit 1), seal and unseal move that data under a key, id, prove and check-proof tie a past prediction to the rows of a sealed file, verify checks that this environment predicts as the sealing one, check --absent tells whether given rows left a file."""
 
 from __future__ import annotations
 
@@ -21,6 +21,17 @@ def _parser() -> argparse.ArgumentParser:
     scan.add_argument("--json", action="store_true", help="print one JSON report per file")
     scan.add_argument(
         "--min-rows", type=int, default=20, help="smallest table reported (default: 20)"
+    )
+    check = commands.add_parser(
+        "check", help="tell whether given rows are absent from a model file (never prints them)"
+    )
+    check.add_argument(
+        "--absent", required=True, metavar="ROWS", help="CSV or .npy file of the rows to look for"
+    )
+    check.add_argument("file", help="model file to search, which is never run")
+    check.add_argument("--json", action="store_true", help="print the report as JSON")
+    check.add_argument(
+        "--min-rows", type=int, default=20, help="smallest table searched (default: 20)"
     )
     seal = commands.add_parser(
         "seal",
@@ -63,12 +74,16 @@ def _parser() -> argparse.ArgumentParser:
         "--tolerance", type=float, default=0.0, help="largest deviation accepted (default: 0)"
     )
     verify.add_argument("--key-file", help="file whose bytes are the key; else TABCUSTODY_KEY")
-    check = commands.add_parser(
+    proof_check = commands.add_parser(
         "check-proof", help="tell whether a proof holds for a logged identifier (exit 1 if not)"
     )
-    check.add_argument("proof", help="JSON file written from `tabcustody prove`")
-    check.add_argument("--id", required=True, help="the identifier logged with the prediction")
-    check.add_argument("--audit-key-file", required=True, help="file holding the hex audit key")
+    proof_check.add_argument("proof", help="JSON file written from `tabcustody prove`")
+    proof_check.add_argument(
+        "--id", required=True, help="the identifier logged with the prediction"
+    )
+    proof_check.add_argument(
+        "--audit-key-file", required=True, help="file holding the hex audit key"
+    )
     return parser
 
 
@@ -107,10 +122,29 @@ def _check_proof(arguments: argparse.Namespace) -> int:
     return 1
 
 
+def _check(arguments: argparse.Namespace) -> int:
+    from tabcustody._absence import check_absent, read_rows
+
+    try:
+        rows = read_rows(arguments.absent)
+    except (ValueError, OSError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    report = check_absent(arguments.file, rows, min_rows=arguments.min_rows)
+    print(json.dumps(report.to_dict(), indent=2) if arguments.json else report.to_text())
+    if report.error is not None:
+        return 2
+    if report.present:
+        return 1
+    return 0 if report.verified else 3
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     if arguments.command == "scan":
         return _scan(arguments)
+    if arguments.command == "check":
+        return _check(arguments)
     if arguments.command == "check-proof":
         return _check_proof(arguments)
 
