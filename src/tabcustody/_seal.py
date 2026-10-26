@@ -7,6 +7,9 @@ import io
 import json
 import os
 import pickle
+import platform
+import sys
+import warnings
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -15,11 +18,23 @@ import numpy as np
 
 from tabcustody._detect import _TABICL_CACHE, find_tables
 from tabcustody._reader import read_bytes
+from tabcustody._trace import merkle_root, table_leaves
 
 MIN_ROWS = 20
 _TABPFN_CACHE_PREFIX = "tabpfn.architectures."
-_FORMAT = "tabcustody-seal/1"
+_FORMAT = "tabcustody-seal/2"
+_FORMATS = ("tabcustody-seal/1", _FORMAT)
 _HKDF_INFO = b"tabcustody-seal/1"
+_AUDIT_INFO = b"tabcustody-audit/1"
+_COMMITMENT = "rfc9162-hmac-sha256/1"
+_LIBRARIES = {
+    "numpy": "numpy",
+    "scikit-learn": "sklearn",
+    "torch": "torch",
+    "tabpfn": "tabpfn",
+    "tabicl": "tabicl",
+    "tabdpt": "tabdpt",
+}
 
 
 class CannotSeal(Exception):
@@ -72,9 +87,20 @@ def _is_cache(value: Any) -> bool:
 
 def sealable_objects(model: Any, min_rows: int = MIN_ROWS) -> list[Any]:
     """Returns every object `seal` must lift from the live model, the live counterpart of what the scanner reports: a 2-D table beside a 1-D companion or as wide as its owner's n_features_in_, that companion, 2-D arrays of the same row count (copies), X_min_/X_max_ (column extremes), and whole cache containers."""
+    return _sealable(model, min_rows)[0]
+
+
+def training_tables(model: Any, min_rows: int = MIN_ROWS) -> list[tuple[np.ndarray, Any]]:
+    """Returns each training table of the live model with its 1-D target, or None for a target-less table; copies and caches are left out, they derive from a table."""
+    tables = _sealable(model, min_rows)[1]
+    targeted = {len(table) for table, target in tables if target is not None}
+    return [(t, target) for t, target in tables if target is not None or len(t) not in targeted]
+
+
+def _sealable(model: Any, min_rows: int) -> tuple[list[Any], list[tuple[np.ndarray, Any]]]:
     lift: list[Any] = []
     taken: set[int] = set()
-    tables: list[np.ndarray] = []
+    tables: list[tuple[np.ndarray, Any]] = []
 
     def take(obj: Any) -> None:
         if id(obj) not in taken:
@@ -107,15 +133,15 @@ def sealable_objects(model: Any, min_rows: int = MIN_ROWS) -> list[Any]:
                 if value.shape[0] in companions:
                     take(value)
                     take(companions[value.shape[0]])
-                    tables.append(value)
+                    tables.append((value, companions[value.shape[0]]))
                 elif declared == value.shape[1]:
                     take(value)
-                    tables.append(value)
+                    tables.append((value, None))
         for child in _walk_children(node):
             if id(child) not in seen:
                 stack.append(child)
 
-    rows = {table.shape[0] for table in tables}
+    rows = {table.shape[0] for table, _ in tables}
     seen.clear()
     stack = [model]
     while stack:
@@ -128,7 +154,7 @@ def sealable_objects(model: Any, min_rows: int = MIN_ROWS) -> list[Any]:
         for child in _walk_children(node):
             if id(child) not in seen:
                 stack.append(child)
-    return lift
+    return lift, tables
 
 
 def lift(model: Any, min_rows: int = MIN_ROWS) -> tuple[bytes, list[Any]]:
@@ -185,6 +211,42 @@ def _derive(key: bytes, salt: bytes) -> tuple[bytes, bytes, bytes, str, bytes]:
     )
 
 
+def audit_key(key: bytes) -> bytes:
+    """Derives from the sealing key, without the file's salt, the key under which rows are committed: the same table sealed twice under one key keeps its root, and this key verifies proofs but decrypts nothing."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    return HKDF(hashes.SHA256(), 32, None, _AUDIT_INFO).derive(key)
+
+
+def _versions() -> dict[str, str]:
+    """Returns the versions of Python, tabcustody and the model libraries loaded now, which decide whether a model predicts the same."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        own = version("tabcustody")
+    except PackageNotFoundError:
+        own = "unknown"
+    found = {"python": platform.python_version(), "tabcustody": own}
+    for name, module in _LIBRARIES.items():
+        if module in sys.modules:
+            try:
+                found[name] = version(name)
+            except PackageNotFoundError:
+                found[name] = str(getattr(sys.modules[module], "__version__", "unknown"))
+    return found
+
+
+def _table_fingerprints(model: Any, lifted: list[Any], key: bytes, min_rows: int) -> dict[int, Any]:
+    audit = audit_key(key)
+    fingerprints: dict[int, Any] = {}
+    for table, target in training_tables(model, min_rows):
+        slot = next(i for i, obj in enumerate(lifted) if obj is table)
+        root = merkle_root(table_leaves(audit, table, target))
+        fingerprints[slot] = {"scheme": _COMMITMENT, "rows": len(table), "root": root.hex()}
+    return fingerprints
+
+
 def _hmac(fp_key: bytes, data: bytes) -> str:
     from cryptography.hazmat.primitives import hashes, hmac
 
@@ -204,6 +266,7 @@ def seal(model: Any, path: str | Path, key: bytes, min_rows: int = MIN_ROWS) -> 
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     model_bytes, lifted = lift(model, min_rows)
+    fingerprints = _table_fingerprints(model, lifted, key, min_rows)
     salt = os.urandom(16)
     enc_key, fp_key, commitment, key_id, mac_key = _derive(key, salt)
     cipher = AESGCM(enc_key)
@@ -219,7 +282,7 @@ def seal(model: Any, path: str | Path, key: bytes, min_rows: int = MIN_ROWS) -> 
                 "nonce": nonce.hex(),
                 "ciphertext": base64.b64encode(ciphertext).decode(),
                 "fingerprint": _hmac(fp_key, blob),
-                "table_fingerprint": None,
+                "table_fingerprint": fingerprints.get(slot),
             }
         )
     manifest = {
@@ -228,6 +291,7 @@ def seal(model: Any, path: str | Path, key: bytes, min_rows: int = MIN_ROWS) -> 
         "salt": salt.hex(),
         "commitment": commitment.hex(),
         "key_id": key_id,
+        "versions": _versions(),
         "objects": objects,
     }
     manifest["mac"] = _file_tag(mac_key, model_bytes, manifest)
@@ -245,6 +309,8 @@ def unseal(path: str | Path, key: bytes) -> Any:
     with zipfile.ZipFile(path) as archive:
         manifest = json.loads(archive.read("manifest.json"))
         model_bytes = archive.read("model.pkl")
+    if manifest.get("format") not in _FORMATS:
+        raise CannotUnseal(f"unknown sealed format {manifest.get('format')!r}")
     enc_key, _, commitment, _, mac_key = _derive(key, bytes.fromhex(manifest["salt"]))
     if not bytes_eq(commitment, bytes.fromhex(manifest["commitment"])):
         raise CannotUnseal("the key does not open this file")
@@ -264,4 +330,21 @@ def unseal(path: str | Path, key: bytes) -> Any:
         except InvalidTag as error:
             raise CannotUnseal("the file was changed since it was sealed") from error
         lifted[int(entry["slot"])] = pickle.loads(blob)
-    return restore(model_bytes, lifted)
+    model = restore(model_bytes, lifted)
+    _warn_on_other_versions(manifest.get("versions", {}))
+    return model
+
+
+def _warn_on_other_versions(sealed: dict[str, str]) -> None:
+    now = _versions()
+    changed = [
+        f"{name} {sealed[name]} -> {now[name]}"
+        for name in sealed
+        if name in now and name not in ("python", "tabcustody") and now[name] != sealed[name]
+    ]
+    if changed:
+        warnings.warn(
+            "this model was sealed with other library versions and may predict differently: "
+            + ", ".join(changed),
+            stacklevel=3,
+        )

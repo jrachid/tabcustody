@@ -115,3 +115,162 @@ def test_every_nan_encodes_alike_and_negative_zero_does_not_encode_as_zero():
     assert encode_row(0, quiet) == encode_row(0, payload)
     assert encode_row(0, np.array([-0.0])) != encode_row(0, np.array([0.0]))
     assert encode_row(0, quiet.astype(">f8")) == encode_row(0, quiet)
+
+
+FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
+
+
+class TargetLess:
+    def __init__(self, X):
+        self._fit_X = X
+        self.n_features_in_ = X.shape[1]
+
+
+def sealed_manifest(path):
+    import json
+    import zipfile
+
+    with zipfile.ZipFile(path) as archive:
+        return json.loads(archive.read("manifest.json"))
+
+
+def fingerprints(path):
+    return [
+        o["table_fingerprint"] for o in sealed_manifest(path)["objects"] if o["table_fingerprint"]
+    ]
+
+
+def test_sealing_commits_each_table_with_its_target_and_nothing_else(tmp_path):
+    from tabcustody import seal
+    from tabcustody._seal import audit_key
+
+    X, y = table()
+    path = tmp_path / "model.sealed"
+
+    seal({"X": X, "y": y}, path, KEY)
+
+    expected = merkle_root(table_leaves(audit_key(KEY), X, y)).hex()
+    assert fingerprints(path) == [
+        {"scheme": "rfc9162-hmac-sha256/1", "rows": ROWS, "root": expected}
+    ]
+
+
+def test_a_table_without_target_is_committed_alone(tmp_path):
+    from tabcustody import seal
+    from tabcustody._seal import audit_key
+
+    X, _ = table()
+    path = tmp_path / "model.sealed"
+
+    seal(TargetLess(X), path, KEY)
+
+    assert [f["root"] for f in fingerprints(path)] == [
+        merkle_root(table_leaves(audit_key(KEY), X)).hex()
+    ]
+
+
+def test_the_root_does_not_confirm_a_known_table(tmp_path):
+    from tabcustody import seal
+    from tabcustody._seal import audit_key
+
+    X, y = table()
+    path = tmp_path / "model.sealed"
+    seal({"X": X, "y": y}, path, KEY)
+    manifest = path.read_bytes()
+
+    unkeyed = [hashlib.sha256(b"\x00" + encode_row(i, X[i], y[i])).digest() for i in range(ROWS)]
+    other_key = merkle_root(table_leaves(audit_key(b"x" * 32), X, y))
+
+    assert merkle_root(unkeyed).hex().encode() not in manifest
+    assert other_key.hex().encode() not in manifest
+
+
+def test_resealing_under_the_same_key_keeps_the_root(tmp_path):
+    from tabcustody import seal
+
+    X, y = table()
+    for name, key in (("a", KEY), ("b", KEY), ("c", b"x" * 32)):
+        seal({"X": X, "y": y}, tmp_path / name, key)
+
+    roots = [fingerprints(tmp_path / name)[0]["root"] for name in "abc"]
+
+    assert roots[0] == roots[1] != roots[2]
+
+
+def test_the_audit_key_cannot_unseal(tmp_path):
+    import pytest
+
+    from tabcustody import CannotUnseal, seal, unseal
+    from tabcustody._seal import audit_key
+
+    X, y = table()
+    path = tmp_path / "model.sealed"
+    seal({"X": X, "y": y}, path, KEY)
+
+    with pytest.raises(CannotUnseal):
+        unseal(path, audit_key(KEY))
+
+
+def test_a_version_one_file_still_unseals():
+    from tabcustody import unseal
+
+    back = unseal(FIXTURES / "sealed-format-1.zip", b"\x01" * 32)
+
+    assert np.array_equal(back["X"], np.arange(120, dtype=float).reshape(40, 3))
+    assert np.array_equal(back["y"], np.arange(40))
+
+
+def test_an_unknown_format_is_refused(tmp_path):
+    import json
+    import zipfile
+
+    import pytest
+
+    from tabcustody import CannotUnseal, unseal
+
+    with zipfile.ZipFile(FIXTURES / "sealed-format-1.zip") as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        model_bytes = archive.read("model.pkl")
+    manifest["format"] = "tabcustody-seal/99"
+    path = tmp_path / "future.sealed"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("model.pkl", model_bytes)
+        archive.writestr("manifest.json", json.dumps(manifest))
+
+    with pytest.raises(CannotUnseal, match="format"):
+        unseal(path, b"\x01" * 32)
+
+
+def test_unsealing_warns_when_a_library_version_changed(tmp_path, monkeypatch):
+    import pytest
+
+    from tabcustody import _seal, seal, unseal
+
+    X, y = table()
+    path = tmp_path / "model.sealed"
+    seal({"X": X, "y": y}, path, KEY)
+    recorded = sealed_manifest(path)["versions"]
+    monkeypatch.setattr(_seal, "_versions", lambda: {**recorded, "numpy": "0.0.1"})
+
+    with pytest.warns(UserWarning, match=f"numpy {recorded['numpy']} -> 0.0.1"):
+        unseal(path, KEY)
+
+
+class WithTransformedCopy:
+    def __init__(self, X, y):
+        self._fit_X, self._y = X, y
+        self.preprocessor = TargetLess(X * 2.0)
+
+
+def test_a_transformed_copy_beside_a_targeted_table_gets_no_root(tmp_path):
+    from tabcustody import seal
+    from tabcustody._seal import audit_key
+
+    X, y = table()
+    path = tmp_path / "model.sealed"
+
+    seal(WithTransformedCopy(X, y), path, KEY)
+
+    assert [f["root"] for f in fingerprints(path)] == [
+        merkle_root(table_leaves(audit_key(KEY), X, y)).hex()
+    ]
