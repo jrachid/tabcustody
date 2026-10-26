@@ -236,3 +236,62 @@ def test_a_replaced_model_skeleton_is_refused_and_not_run(tmp_path):
         assert "changed" in str(error)
     assert not ran.exists()
     assert json.loads(manifest)  # the manifest itself was untouched, yet unseal still refused
+
+
+def fake_tabpfn(monkeypatch):
+    """Registers stand-ins for TabPFN's network and cache classes under its module names, so they pickle by reference."""
+    import sys
+    import types
+
+    names = (
+        "tabpfn",
+        "tabpfn.architectures",
+        "tabpfn.architectures.v3",
+        "tabpfn.architectures.kv_cache",
+    )
+    modules = {name: types.ModuleType(name) for name in names}
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    class Network:
+        def __init__(self):
+            self.weights = np.arange(64.0)
+
+    class KVCacheEntry:
+        def __init__(self):
+            self.key = np.arange(ROWS * 3, dtype=float).reshape(1, ROWS, 3)
+
+    class Cache:
+        def __init__(self):
+            self.kv = {0: KVCacheEntry()}
+            self.train_shape = (1, ROWS)
+
+    for cls, module in ((Network, "v3"), (Cache, "v3"), (KVCacheEntry, "kv_cache")):
+        cls.__module__ = f"tabpfn.architectures.{module}"
+        cls.__qualname__ = cls.__name__
+        setattr(modules[cls.__module__], cls.__name__, cls)
+    return Network, Cache
+
+
+def test_tabpfn_network_weights_stay_in_the_clear_skeleton(monkeypatch):
+    Network, _ = fake_tabpfn(monkeypatch)
+    model = Estimator()
+    model.models_ = [Network()]
+    model.networks = {"main": model.models_[0]}
+
+    model_bytes, lifted = lift(model)
+
+    assert [a.shape for a in lifted] == [(ROWS, 3), (ROWS,)]
+    assert np.arange(64.0).tobytes() in model_bytes
+
+
+def test_a_tabpfn_cache_is_still_lifted_whole(monkeypatch):
+    Network, Cache = fake_tabpfn(monkeypatch)
+    model = Estimator()
+    model.models_ = [Network()]
+    model.caches = [Cache()]
+
+    _, lifted = lift(model)
+
+    assert any(obj is model.caches for obj in lifted)
+    assert not any(obj is model.models_ for obj in lifted)

@@ -17,7 +17,12 @@ from typing import Any
 
 import numpy as np
 
-from tabcustody._detect import _TABICL_CACHE, find_tables
+from tabcustody._detect import (
+    _TABICL_CACHE,
+    _TABPFN_ENTRY,
+    _TABPFN_QUANTIZED_ENTRY,
+    find_tables,
+)
 from tabcustody._reader import read_bytes
 from tabcustody._trace import identifier, inclusion_path, merkle_root, table_leaves
 
@@ -81,13 +86,27 @@ def _walk_children(node: Any) -> list[Any]:
     return [value for _, value in _named_items(node)]
 
 
+def _is_tabpfn_cache(entry: Any) -> bool:
+    """Tells a TabPFN cache from the network, whose classes share its module prefix, by what the scanner reads: per-layer key-value entries and the training shape."""
+    if not _class_name(entry).startswith(_TABPFN_CACHE_PREFIX):
+        return False
+    layers = getattr(entry, "kv", None)
+    if not isinstance(layers, dict) or not layers or getattr(entry, "train_shape", None) is None:
+        return False
+    return {_class_name(layer) for layer in layers.values()} <= {
+        _TABPFN_ENTRY,
+        _TABPFN_QUANTIZED_ENTRY,
+    }
+
+
 def _is_cache(value: Any) -> bool:
-    """Tells whether `value` is a cache container: a dict or list whose entries are TabICL or TabPFN cache objects."""
+    """Tells whether `value` is a cache container: a dict of TabICL caches, or a list of TabPFN caches."""
     entries = list(value.values()) if isinstance(value, dict) else value
     if not isinstance(value, dict | list) or not entries:
         return False
-    names = {_class_name(entry) for entry in entries}
-    return names == {_TABICL_CACHE} or all(n.startswith(_TABPFN_CACHE_PREFIX) for n in names)
+    if {_class_name(entry) for entry in entries} == {_TABICL_CACHE}:
+        return True
+    return isinstance(value, list) and all(_is_tabpfn_cache(entry) for entry in entries)
 
 
 def sealable_objects(model: Any, min_rows: int = MIN_ROWS) -> list[Any]:
