@@ -12,6 +12,7 @@ import platform
 import sys
 import warnings
 import zipfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -375,9 +376,38 @@ def seal(
         archive.writestr("manifest.json", json.dumps(manifest))
 
 
-def unseal(path: str | Path, key: bytes) -> Any:
-    """Rebuilds the model `seal` wrote, with `key`; raises CannotUnseal if the key is wrong or the file was changed."""
-    manifest, model_bytes, lifted = _open(path, key)
+Keys = bytes | Iterable[bytes]
+
+
+def _ring(keys: Keys) -> list[bytes]:
+    return [bytes(keys)] if isinstance(keys, bytes | bytearray) else [bytes(k) for k in keys]
+
+
+def _read(path: str | Path) -> tuple[dict[str, Any], bytes]:
+    with zipfile.ZipFile(path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        model_bytes = archive.read("model.pkl")
+    if manifest.get("format") not in _FORMATS:
+        raise CannotUnseal(f"unknown sealed format {manifest.get('format')!r}")
+    return manifest, model_bytes
+
+
+def _opening_key(manifest: dict[str, Any], keys: Keys) -> bytes | None:
+    """Returns the first key the file commits to, found by its commitment alone, without decrypting anything."""
+    from cryptography.hazmat.primitives.constant_time import bytes_eq
+
+    salt, commitment = bytes.fromhex(manifest["salt"]), bytes.fromhex(manifest["commitment"])
+    return next((k for k in _ring(keys) if bytes_eq(_derive(k, salt)[2], commitment)), None)
+
+
+def opens(path: str | Path, keys: Keys) -> bool:
+    """Tells whether one of `keys` still opens the sealed file: once a version's key is destroyed, the remaining keys must not."""
+    return _opening_key(_read(path)[0], keys) is not None
+
+
+def unseal(path: str | Path, key: Keys) -> Any:
+    """Rebuilds the model `seal` wrote, with its key or a ring of keys that holds it; raises CannotUnseal if no key opens the file or the file was changed."""
+    manifest, model_bytes, lifted, _ = _open(path, key)
     model = restore(model_bytes, lifted)
     _warn_on_other_versions(manifest.get("versions", {}))
     return model
@@ -419,11 +449,11 @@ def _deviation(sealed: np.ndarray, now: np.ndarray) -> float:
     return 0.0 if np.array_equal(sealed, now) else float("inf")
 
 
-def verify(path: str | Path, key: bytes, tolerance: float = 0.0) -> Verification:
+def verify(path: str | Path, key: Keys, tolerance: float = 0.0) -> Verification:
     """Rebuilds the sealed model here, runs it on the probes sealed with it, and reports how far its predictions moved; raises CannotTrace if the file was sealed without probes."""
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-    manifest, model_bytes, lifted = _open(path, key)
+    manifest, model_bytes, lifted, key = _open(path, key)
     if "probes" not in manifest:
         raise CannotTrace("this file was sealed without probes; seal it again with probes")
     enc_key = _derive(key, bytes.fromhex(manifest["salt"]))[0]
@@ -447,21 +477,19 @@ def verify(path: str | Path, key: bytes, tolerance: float = 0.0) -> Verification
 
 
 def _open(
-    path: str | Path, key: bytes, slots: set[int] | None = None
-) -> tuple[dict[str, Any], bytes, list[Any]]:
-    """Checks the key and the whole-file tag, then decrypts the lifted objects, or only those in `slots`."""
+    path: str | Path, keys: Keys, slots: set[int] | None = None
+) -> tuple[dict[str, Any], bytes, list[Any], bytes]:
+    """Finds the key that opens the file, checks the whole-file tag, then decrypts the lifted objects, or only those in `slots`; returns the key it used."""
     from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.constant_time import bytes_eq
 
-    with zipfile.ZipFile(path) as archive:
-        manifest = json.loads(archive.read("manifest.json"))
-        model_bytes = archive.read("model.pkl")
-    if manifest.get("format") not in _FORMATS:
-        raise CannotUnseal(f"unknown sealed format {manifest.get('format')!r}")
-    enc_key, _, commitment, _, mac_key = _derive(key, bytes.fromhex(manifest["salt"]))
-    if not bytes_eq(commitment, bytes.fromhex(manifest["commitment"])):
-        raise CannotUnseal("the key does not open this file")
+    manifest, model_bytes = _read(path)
+    key = _opening_key(manifest, keys)
+    if key is None:
+        many = len(_ring(keys)) > 1
+        raise CannotUnseal("no key opens this file" if many else "the key does not open this file")
+    enc_key, _, _, _, mac_key = _derive(key, bytes.fromhex(manifest["salt"]))
     expected = _file_tag(mac_key, model_bytes, manifest)
     if "mac" not in manifest or not bytes_eq(
         bytes.fromhex(expected), bytes.fromhex(manifest["mac"])
@@ -480,7 +508,7 @@ def _open(
         except InvalidTag as error:
             raise CannotUnseal("the file was changed since it was sealed") from error
         lifted[int(entry["slot"])] = pickle.loads(blob)
-    return manifest, model_bytes, lifted
+    return manifest, model_bytes, lifted, key
 
 
 def _committed(manifest: dict[str, Any]) -> list[dict[str, Any]]:
@@ -509,7 +537,7 @@ def _exact(values: Any) -> dict[str, str]:
     return {"dtype": values.dtype.str, "hex": values.tobytes().hex()}
 
 
-def prove(path: str | Path, key: bytes, position: int, table: int = 0) -> dict[str, Any]:
+def prove(path: str | Path, key: Keys, position: int, table: int = 0) -> dict[str, Any]:
     """Returns the proof that the row at `position` of the file's `table`-th training table was in it: the row and its target, and nothing of the other rows. Raises CannotTrace if there is no such table or row."""
     with zipfile.ZipFile(path) as archive:
         manifest = json.loads(archive.read("manifest.json"))
@@ -519,7 +547,7 @@ def prove(path: str | Path, key: bytes, position: int, table: int = 0) -> dict[s
     commitment = entries[table]["table_fingerprint"]
     slot, target_slot = int(entries[table]["slot"]), commitment["target_slot"]
     wanted = {slot} if target_slot is None else {slot, int(target_slot)}
-    manifest, model_bytes, lifted = _open(path, key, wanted)
+    manifest, model_bytes, lifted, key = _open(path, key, wanted)
     rows = lifted[slot]
     target = None if target_slot is None else lifted[int(target_slot)]
     if not 0 <= position < len(rows):

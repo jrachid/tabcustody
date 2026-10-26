@@ -157,3 +157,45 @@ def test_an_extreme_shared_with_rows_still_in_the_table_is_not_this_persons():
 
     assert report.present == () and report.uncertain == ()
     assert report.verified
+
+
+def test_a_sealed_file_is_searched_once_opened_with_its_key(tmp_path):
+    from tabcustody import seal
+
+    path = tmp_path / "model.sealed"
+    seal(without(ERASED), path, b"k" * 32)
+
+    locked = check_absent(path, X[[ERASED, 7]])
+    opened = check_absent(path, X[[ERASED, 7]], keys=[b"other" * 7, b"k" * 32])
+
+    assert "pass its key" in locked.error
+    assert opened.present == (1,) and opened.verified
+
+
+def test_a_wrong_key_does_not_turn_into_an_absence(tmp_path):
+    from tabcustody import seal
+
+    path = tmp_path / "model.sealed"
+    seal(without(ERASED), path, b"k" * 32)
+
+    report = check_absent(path, X[[ERASED]], keys=b"wrong" * 7)
+
+    assert report.error is not None and not report.verified
+
+
+def test_the_command_tells_whether_an_old_version_still_opens(tmp_path, capsys):
+    from tabcustody import seal
+
+    old, new = tmp_path / "v1.sealed", tmp_path / "v2.sealed"
+    keys = {name: tmp_path / name for name in ("k1", "k2")}
+    keys["k1"].write_bytes(b"1" * 32)
+    keys["k2"].write_bytes(b"2" * 32)
+    seal(without(ERASED), old, b"1" * 32)
+    seal(without(7), new, b"2" * 32)
+
+    ring = ["--key-file", str(keys["k2"])]
+    assert main(["check", "--revoked", str(old), *ring]) == 0
+    assert main(["check", "--revoked", str(old), *ring, "--key-file", str(keys["k1"])]) == 1
+    assert main(["check", "--revoked", str(new), *ring]) == 1
+    assert main(["check", "--revoked", str(old)]) == 2
+    assert "none of the 1 key(s) opens it" in capsys.readouterr().out

@@ -469,3 +469,15 @@ def test_changed_probes_are_refused(tmp_path):
 
     with pytest.raises(CannotUnseal, match="changed"):
         verify(path, KEY)
+
+
+def test_proving_and_verifying_take_a_ring_of_keys(tmp_path):
+    from tabcustody import audit_key, file_id, prove, verify, verify_proof
+
+    path, _ = probed(tmp_path)
+    ring = [b"x" * 32, KEY]
+
+    proof = prove(path, ring, 3)
+
+    assert verify_proof(proof, audit_key(KEY), file_id(path))
+    assert verify(path, ring).identical

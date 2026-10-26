@@ -295,3 +295,28 @@ def test_a_tabpfn_cache_is_still_lifted_whole(monkeypatch):
 
     assert any(obj is model.caches for obj in lifted)
     assert not any(obj is model.models_ for obj in lifted)
+
+
+def test_a_ring_of_keys_opens_the_file_its_one_right_key_opens(tmp_path):
+    from tabcustody import seal, unseal
+
+    path = tmp_path / "model.sealed"
+    seal(Estimator(), path, b"\x01" * 32)
+
+    back = unseal(path, [b"\x02" * 32, b"\x01" * 32, b"\x03" * 32])
+
+    assert np.array_equal(back._fit_X, Estimator()._fit_X)
+
+
+def test_a_ring_without_the_right_key_is_refused(tmp_path):
+    import pytest
+
+    from tabcustody import CannotUnseal, seal, unseal
+    from tabcustody._seal import opens
+
+    path = tmp_path / "model.sealed"
+    seal(Estimator(), path, b"\x01" * 32)
+
+    with pytest.raises(CannotUnseal, match="no key opens"):
+        unseal(path, [b"\x02" * 32, b"\x03" * 32])
+    assert not opens(path, [b"\x02" * 32]) and opens(path, [b"\x02" * 32, b"\x01" * 32])

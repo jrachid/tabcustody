@@ -23,12 +23,25 @@ def _parser() -> argparse.ArgumentParser:
         "--min-rows", type=int, default=20, help="smallest table reported (default: 20)"
     )
     check = commands.add_parser(
-        "check", help="tell whether given rows are absent from a model file (never prints them)"
+        "check",
+        help="tell whether given rows are absent from a model file (never prints them), "
+        "or whether a sealed file can still be opened",
+    )
+    what = check.add_mutually_exclusive_group(required=True)
+    what.add_argument("--absent", metavar="ROWS", help="CSV or .npy file of the rows to look for")
+    what.add_argument(
+        "--revoked",
+        action="store_true",
+        help="exit 0 only if none of the given keys opens the sealed file",
     )
     check.add_argument(
-        "--absent", required=True, metavar="ROWS", help="CSV or .npy file of the rows to look for"
+        "file", help="model file to search, never run unless sealed and opened with its key"
     )
-    check.add_argument("file", help="model file to search, which is never run")
+    check.add_argument(
+        "--key-file",
+        action="append",
+        help="key of a sealed file; repeat for a ring of keys; else TABCUSTODY_KEY",
+    )
     check.add_argument("--json", action="store_true", help="print the report as JSON")
     check.add_argument(
         "--min-rows", type=int, default=20, help="smallest table searched (default: 20)"
@@ -49,7 +62,11 @@ def _parser() -> argparse.ArgumentParser:
     unseal = commands.add_parser("unseal", help="rebuild a sealed model, given its key")
     unseal.add_argument("input", help="sealed file")
     unseal.add_argument("output", help="pickle of the rebuilt model to write")
-    unseal.add_argument("--key-file", help="file whose bytes are the key; else TABCUSTODY_KEY")
+    unseal.add_argument(
+        "--key-file",
+        action="append",
+        help="file whose bytes are the key; repeat for a ring of keys; else TABCUSTODY_KEY",
+    )
     ident = commands.add_parser(
         "id", help="print a sealed file's identifier, to log beside each prediction (no key)"
     )
@@ -60,7 +77,11 @@ def _parser() -> argparse.ArgumentParser:
     prove.add_argument("input", help="sealed file")
     prove.add_argument("--position", type=int, required=True, help="row position in the table")
     prove.add_argument("--table", type=int, default=0, help="committed table (default: 0)")
-    prove.add_argument("--key-file", help="file whose bytes are the key; else TABCUSTODY_KEY")
+    prove.add_argument(
+        "--key-file",
+        action="append",
+        help="file whose bytes are the key; repeat for a ring of keys; else TABCUSTODY_KEY",
+    )
     audit = commands.add_parser(
         "audit-key", help="print, in hex, the key that checks proofs and decrypts nothing"
     )
@@ -73,7 +94,11 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument(
         "--tolerance", type=float, default=0.0, help="largest deviation accepted (default: 0)"
     )
-    verify.add_argument("--key-file", help="file whose bytes are the key; else TABCUSTODY_KEY")
+    verify.add_argument(
+        "--key-file",
+        action="append",
+        help="file whose bytes are the key; repeat for a ring of keys; else TABCUSTODY_KEY",
+    )
     proof_check = commands.add_parser(
         "check-proof", help="tell whether a proof holds for a logged identifier (exit 1 if not)"
     )
@@ -87,11 +112,13 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _key(key_file: str | None) -> bytes | None:
-    if key_file is not None:
-        return Path(key_file).read_bytes()
+def _keys(key_files: str | list[str] | None) -> list[bytes] | None:
+    """Returns the keys from the key files, or from TABCUSTODY_KEY, or None when there is none."""
+    if key_files:
+        files = [key_files] if isinstance(key_files, str) else key_files
+        return [Path(file).read_bytes() for file in files]
     from_env = os.environ.get("TABCUSTODY_KEY")
-    return from_env.encode() if from_env else None
+    return [from_env.encode()] if from_env else None
 
 
 def _scan(arguments: argparse.Namespace) -> int:
@@ -125,18 +152,39 @@ def _check_proof(arguments: argparse.Namespace) -> int:
 def _check(arguments: argparse.Namespace) -> int:
     from tabcustody._absence import check_absent, read_rows
 
+    keys = _keys(arguments.key_file)
+    if arguments.revoked:
+        return _revoked(arguments.file, keys)
     try:
         rows = read_rows(arguments.absent)
     except (ValueError, OSError) as error:
         print(str(error), file=sys.stderr)
         return 2
-    report = check_absent(arguments.file, rows, min_rows=arguments.min_rows)
+    report = check_absent(arguments.file, rows, min_rows=arguments.min_rows, keys=keys)
     print(json.dumps(report.to_dict(), indent=2) if arguments.json else report.to_text())
     if report.error is not None:
         return 2
     if report.present:
         return 1
     return 0 if report.verified else 3
+
+
+def _revoked(path: str, keys: list[bytes] | None) -> int:
+    from tabcustody._seal import CannotUnseal, opens
+
+    if not keys:
+        print("no key: pass the remaining keys with --key-file", file=sys.stderr)
+        return 2
+    try:
+        still = opens(path, keys)
+    except (CannotUnseal, OSError, KeyError, ValueError) as error:
+        print(f"{path}: not a sealed file this command can read ({error})", file=sys.stderr)
+        return 2
+    if still:
+        print(f"{path}: one of the {len(keys)} key(s) still opens it")
+        return 1
+    print(f"{path}: none of the {len(keys)} key(s) opens it; its copies are unreadable to them")
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -167,10 +215,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(str(error), file=sys.stderr)
             return 3
         return 0
-    key = _key(arguments.key_file)
-    if key is None:
+    keys = _keys(arguments.key_file)
+    if keys is None:
         print("no key: pass --key-file or set TABCUSTODY_KEY", file=sys.stderr)
         return 2
+    key = keys[0]
     try:
         if arguments.command == "seal":
             # Loading runs the model's own pickle; it is the user's file, the same trust `unseal` takes.
@@ -179,14 +228,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             seal(model, arguments.output, key, probes=arguments.probes)
             print(f"sealed {arguments.model} -> {arguments.output}")
         elif arguments.command == "unseal":
-            model = unseal(arguments.input, key)
+            model = unseal(arguments.input, keys)
             Path(arguments.output).write_bytes(pickle.dumps(model))
             print(f"unsealed {arguments.input} -> {arguments.output}")
         elif arguments.command == "prove":
-            proof = prove(arguments.input, key, arguments.position, arguments.table)
+            proof = prove(arguments.input, keys, arguments.position, arguments.table)
             print(json.dumps(proof, indent=2))
         elif arguments.command == "verify":
-            result = verify(arguments.input, key, arguments.tolerance)
+            result = verify(arguments.input, keys, arguments.tolerance)
             print(result.to_text())
             return 0 if result.holds else 1
         else:

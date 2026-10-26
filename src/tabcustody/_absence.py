@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import pickle
 import zipfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -11,7 +13,7 @@ from typing import Any
 import numpy as np
 
 from tabcustody._detect import Finding, _walk, as_table, find_tables
-from tabcustody._reader import Shell, UnreadableFileError, read_members
+from tabcustody._reader import Shell, UnreadableFileError, read_bytes, read_members
 from tabcustody._reverse import reverse
 
 TOLERANCE = 1e-9
@@ -192,16 +194,33 @@ def _explained(
     return False
 
 
-def check_absent(path: str | Path, rows: np.ndarray, min_rows: int = 20) -> AbsenceReport:
-    """Searches the file for each given row, in every training table after reversing its scaler and among the column extremes, without running the file; the report never holds a value of the rows."""
-    rows = np.atleast_2d(np.asarray(rows, dtype=float))
-    if _sealed(path):
-        return AbsenceReport(
-            str(path),
-            error="the file is sealed; checking it needs the key, which is not supported yet",
-        )
+def _members(
+    path: str | Path, keys: bytes | Iterable[bytes] | None
+) -> list[tuple[str | None, Any]]:
+    """Returns the object trees to search: the file's own, or, for a sealed file, the tree of the model its key rebuilds, which runs that model's pickle as unseal does."""
+    if not _sealed(path):
+        return read_members(path)[1]
+    if keys is None:
+        raise UnreadableFileError("the file is sealed; pass its key to check it")
+    from tabcustody._seal import CannotUnseal, unseal
+
     try:
-        _, members = read_members(path)
+        model = unseal(path, keys)
+    except CannotUnseal as error:
+        raise UnreadableFileError(str(error)) from None
+    return [(None, read_bytes(pickle.dumps(model)))]
+
+
+def check_absent(
+    path: str | Path,
+    rows: np.ndarray,
+    min_rows: int = 20,
+    keys: bytes | Iterable[bytes] | None = None,
+) -> AbsenceReport:
+    """Searches the file for each given row, in every training table after reversing its scaler and among the column extremes; a clear file is never run, a sealed one is rebuilt with `keys`. The report never holds a value of the rows."""
+    rows = np.atleast_2d(np.asarray(rows, dtype=float))
+    try:
+        members = _members(path, keys)
     except (UnreadableFileError, OSError) as error:
         return AbsenceReport(str(path), error=str(error))
 
