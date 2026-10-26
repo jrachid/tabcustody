@@ -222,3 +222,24 @@ def test_the_commands_erase_and_check_the_receipt(tmp_path, capsys):
     assert main(["check-receipt", str(receipt), "--audit-key-file", str(tmp_path / "audit")]) == 0
     receipt.write_text(receipt.read_text().replace('"removed": 1', '"removed": 2'))
     assert main(["check-receipt", str(receipt), "--audit-key-file", str(tmp_path / "audit")]) == 1
+
+
+class Named(Nearest):
+    """Keeps the column names it was fitted with, as scikit-learn does with a DataFrame."""
+
+    def fit(self, X, y):
+        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        return super().fit(np.asarray(X), y)
+
+    def predict_proba(self, inputs):
+        assert list(inputs.columns) == list(self.feature_names_in_)
+        return super().predict_proba(np.asarray(inputs))
+
+
+def test_column_names_the_model_was_fitted_with_are_kept():
+    pandas = pytest.importorskip("pandas")
+    model = Named().fit(pandas.DataFrame(X, columns=["age", "income", "debt"]), Y)
+
+    erasure = erase(model, X[[ERASED]])
+
+    assert list(erasure.model.feature_names_in_) == ["age", "income", "debt"]

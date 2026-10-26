@@ -58,9 +58,20 @@ def _clone(model: Any) -> Any:
     return clone(model)
 
 
+def _named(model: Any, X: np.ndarray) -> Any:
+    """Gives X the column names the model was fitted with, so the refitted model keeps them and no name check fires."""
+    names = getattr(model, "feature_names_in_", None)
+    if names is None:
+        return X
+    import importlib
+
+    frame = importlib.import_module("pandas").DataFrame
+    return frame(np.asarray(X), columns=list(names))
+
+
 def _fit(model: Any, X: np.ndarray, y: np.ndarray) -> Any:
     fresh = _clone(model)
-    fitted = fresh.fit(X, y)
+    fitted = fresh.fit(_named(model, X), y)
     return fresh if fitted is None else fitted
 
 
@@ -68,7 +79,8 @@ def _outputs(model: Any, inputs: np.ndarray) -> tuple[np.ndarray | None, np.ndar
     """Returns what must not change: the classes, and the probabilities, or the predictions of a model without them."""
     classes = getattr(model, "classes_", None)
     method = getattr(model, "predict_proba", None) or model.predict
-    return (None if classes is None else np.asarray(classes)), np.asarray(method(inputs))
+    outputs = np.asarray(method(_named(model, inputs)))
+    return (None if classes is None else np.asarray(classes)), outputs
 
 
 def _same(
