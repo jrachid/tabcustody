@@ -11,6 +11,7 @@ import numpy as np
 
 _LEAF = b"\x00"
 _NODE = b"\x01"
+_ID = b"tabcustody-id/1\x00"
 
 
 def _array(values: np.ndarray) -> bytes:
@@ -114,3 +115,35 @@ def verify_row(
     """Tells whether this row, with this target, was at `position` of the committed table; needs the audit key and none of the other rows."""
     leaf = leaf_hash(key, encode_row(position, row, target))
     return verify_inclusion(leaf, position, size, path, root)
+
+
+def identifier(skeleton_sha256: bytes, roots: list[bytes]) -> str:
+    return hashlib.sha256(_ID + skeleton_sha256 + b"".join(roots)).hexdigest()
+
+
+def _array_from(exact: dict[str, str]) -> np.ndarray:
+    return np.frombuffer(bytes.fromhex(exact["hex"]), dtype=np.dtype(exact["dtype"]))
+
+
+def verify_proof(proof: dict[str, Any], audit_key: bytes, file_id: str) -> bool:
+    """Tells whether the proof shows its row inside the file whose logged identifier is `file_id`; needs the audit key, neither the sealing key nor the file. A malformed proof is refused, never raised on."""
+    try:
+        skeleton = bytes.fromhex(proof["skeleton_sha256"])
+        roots = [bytes.fromhex(root) for root in proof["roots"]]
+        if not hmac.compare_digest(identifier(skeleton, roots), file_id):
+            return False
+        table = int(proof["table"])
+        if table < 0:
+            return False
+        target = None if proof["target"] is None else _array_from(proof["target"])
+        return verify_row(
+            audit_key,
+            int(proof["position"]),
+            _array_from(proof["row"]),
+            target,
+            int(proof["rows"]),
+            [bytes.fromhex(sibling) for sibling in proof["path"]],
+            roots[table],
+        )
+    except (KeyError, IndexError, TypeError, ValueError):
+        return False

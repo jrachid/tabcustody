@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import os
@@ -18,7 +19,7 @@ import numpy as np
 
 from tabcustody._detect import _TABICL_CACHE, find_tables
 from tabcustody._reader import read_bytes
-from tabcustody._trace import merkle_root, table_leaves
+from tabcustody._trace import identifier, inclusion_path, merkle_root, table_leaves
 
 MIN_ROWS = 20
 _TABPFN_CACHE_PREFIX = "tabpfn.architectures."
@@ -43,6 +44,10 @@ class CannotSeal(Exception):
 
 class CannotUnseal(Exception):
     """Raised when the key does not open the file, or the file was changed since it was sealed."""
+
+
+class CannotTrace(Exception):
+    """Raised when a sealed file carries no row commitment (format 1), or has no such table or row."""
 
 
 def _class_name(obj: Any) -> str:
@@ -242,8 +247,14 @@ def _table_fingerprints(model: Any, lifted: list[Any], key: bytes, min_rows: int
     fingerprints: dict[int, Any] = {}
     for table, target in training_tables(model, min_rows):
         slot = next(i for i, obj in enumerate(lifted) if obj is table)
+        target_slot = next((i for i, obj in enumerate(lifted) if obj is target), None)
         root = merkle_root(table_leaves(audit, table, target))
-        fingerprints[slot] = {"scheme": _COMMITMENT, "rows": len(table), "root": root.hex()}
+        fingerprints[slot] = {
+            "scheme": _COMMITMENT,
+            "rows": len(table),
+            "target_slot": target_slot,
+            "root": root.hex(),
+        }
     return fingerprints
 
 
@@ -302,6 +313,16 @@ def seal(model: Any, path: str | Path, key: bytes, min_rows: int = MIN_ROWS) -> 
 
 def unseal(path: str | Path, key: bytes) -> Any:
     """Rebuilds the model `seal` wrote, with `key`; raises CannotUnseal if the key is wrong or the file was changed."""
+    manifest, model_bytes, lifted = _open(path, key)
+    model = restore(model_bytes, lifted)
+    _warn_on_other_versions(manifest.get("versions", {}))
+    return model
+
+
+def _open(
+    path: str | Path, key: bytes, slots: set[int] | None = None
+) -> tuple[dict[str, Any], bytes, list[Any]]:
+    """Checks the key and the whole-file tag, then decrypts the lifted objects, or only those in `slots`."""
     from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.constant_time import bytes_eq
@@ -322,6 +343,8 @@ def unseal(path: str | Path, key: bytes) -> Any:
     cipher = AESGCM(enc_key)
     lifted: list[Any] = [None] * len(manifest["objects"])
     for entry in manifest["objects"]:
+        if slots is not None and int(entry["slot"]) not in slots:
+            continue
         ciphertext = base64.b64decode(entry["ciphertext"])
         try:
             blob = cipher.decrypt(
@@ -330,9 +353,68 @@ def unseal(path: str | Path, key: bytes) -> Any:
         except InvalidTag as error:
             raise CannotUnseal("the file was changed since it was sealed") from error
         lifted[int(entry["slot"])] = pickle.loads(blob)
-    model = restore(model_bytes, lifted)
-    _warn_on_other_versions(manifest.get("versions", {}))
-    return model
+    return manifest, model_bytes, lifted
+
+
+def _committed(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    entries = [entry for entry in manifest["objects"] if entry.get("table_fingerprint")]
+    if not entries:
+        raise CannotTrace("this file carries no row commitment; it was sealed before format 2")
+    return sorted(entries, key=lambda entry: int(entry["slot"]))
+
+
+def _identity(manifest: dict[str, Any], model_bytes: bytes) -> tuple[bytes, list[bytes]]:
+    roots = [bytes.fromhex(e["table_fingerprint"]["root"]) for e in _committed(manifest)]
+    return hashlib.sha256(model_bytes).digest(), roots
+
+
+def file_id(path: str | Path) -> str:
+    """Returns the identifier to log beside each prediction: readable without the key, it changes with the model or any of its rows, and stays the same when the same model is sealed again under the same key."""
+    with zipfile.ZipFile(path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        model_bytes = archive.read("model.pkl")
+    return identifier(*_identity(manifest, model_bytes))
+
+
+def _exact(values: Any) -> dict[str, str]:
+    values = np.ascontiguousarray(values)
+    values = values.astype(values.dtype.newbyteorder("<"))
+    return {"dtype": values.dtype.str, "hex": values.tobytes().hex()}
+
+
+def prove(path: str | Path, key: bytes, position: int, table: int = 0) -> dict[str, Any]:
+    """Returns the proof that the row at `position` of the file's `table`-th training table was in it: the row and its target, and nothing of the other rows. Raises CannotTrace if there is no such table or row."""
+    with zipfile.ZipFile(path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+    entries = _committed(manifest)
+    if not 0 <= table < len(entries):
+        raise CannotTrace(f"this file has {len(entries)} committed table(s), not a table {table}")
+    commitment = entries[table]["table_fingerprint"]
+    slot, target_slot = int(entries[table]["slot"]), commitment["target_slot"]
+    wanted = {slot} if target_slot is None else {slot, int(target_slot)}
+    manifest, model_bytes, lifted = _open(path, key, wanted)
+    rows = lifted[slot]
+    target = None if target_slot is None else lifted[int(target_slot)]
+    if not 0 <= position < len(rows):
+        raise CannotTrace(f"table {table} has {len(rows)} rows, not a row {position}")
+    leaves = table_leaves(audit_key(key), rows, target)
+    if merkle_root(leaves).hex() != commitment["root"]:
+        raise CannotTrace("the table does not match its commitment")
+    skeleton, roots = _identity(manifest, model_bytes)
+    return {
+        "format": "tabcustody-proof/1",
+        "scheme": commitment["scheme"],
+        "skeleton_sha256": skeleton.hex(),
+        "roots": [root.hex() for root in roots],
+        "table": table,
+        "rows": len(rows),
+        "position": position,
+        "row": _exact(rows[position]),
+        "target": None if target is None else _exact(target[position]),
+        "row_values": rows[position].tolist(),
+        "target_value": None if target is None else target[position].item(),
+        "path": [sibling.hex() for sibling in inclusion_path(leaves, position)],
+    }
 
 
 def _warn_on_other_versions(sealed: dict[str, str]) -> None:

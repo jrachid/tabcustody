@@ -1,4 +1,4 @@
-"""The `tabcustody` command: scan tells whether files carry training data (exit 1), seal and unseal move that data under a key."""
+"""The `tabcustody` command: scan tells whether files carry training data (exit 1), seal and unseal move that data under a key, id, prove and check-proof tie a past prediction to the rows of a sealed file."""
 
 from __future__ import annotations
 
@@ -33,6 +33,27 @@ def _parser() -> argparse.ArgumentParser:
     unseal.add_argument("input", help="sealed file")
     unseal.add_argument("output", help="pickle of the rebuilt model to write")
     unseal.add_argument("--key-file", help="file whose bytes are the key; else TABCUSTODY_KEY")
+    ident = commands.add_parser(
+        "id", help="print a sealed file's identifier, to log beside each prediction (no key)"
+    )
+    ident.add_argument("input", help="sealed file")
+    prove = commands.add_parser(
+        "prove", help="print the JSON proof that one row was in a sealed file's training table"
+    )
+    prove.add_argument("input", help="sealed file")
+    prove.add_argument("--position", type=int, required=True, help="row position in the table")
+    prove.add_argument("--table", type=int, default=0, help="committed table (default: 0)")
+    prove.add_argument("--key-file", help="file whose bytes are the key; else TABCUSTODY_KEY")
+    audit = commands.add_parser(
+        "audit-key", help="print, in hex, the key that checks proofs and decrypts nothing"
+    )
+    audit.add_argument("--key-file", help="file whose bytes are the key; else TABCUSTODY_KEY")
+    check = commands.add_parser(
+        "check-proof", help="tell whether a proof holds for a logged identifier (exit 1 if not)"
+    )
+    check.add_argument("proof", help="JSON file written from `tabcustody prove`")
+    check.add_argument("--id", required=True, help="the identifier logged with the prediction")
+    check.add_argument("--audit-key-file", required=True, help="file holding the hex audit key")
     return parser
 
 
@@ -59,13 +80,43 @@ def _scan(arguments: argparse.Namespace) -> int:
     return 1 if any(report.carries_training_data for report in reports) else 0
 
 
+def _check_proof(arguments: argparse.Namespace) -> int:
+    from tabcustody._trace import verify_proof
+
+    proof = json.loads(Path(arguments.proof).read_text())
+    audit = bytes.fromhex(Path(arguments.audit_key_file).read_text().strip())
+    if verify_proof(proof, audit, arguments.id):
+        print(f"the proof holds: row {proof['position']} was in table {proof['table']}")
+        return 0
+    print("the proof does not hold for this identifier and audit key", file=sys.stderr)
+    return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     if arguments.command == "scan":
         return _scan(arguments)
+    if arguments.command == "check-proof":
+        return _check_proof(arguments)
 
-    from tabcustody._seal import CannotSeal, CannotUnseal, seal, unseal
+    from tabcustody._seal import (
+        CannotSeal,
+        CannotTrace,
+        CannotUnseal,
+        audit_key,
+        file_id,
+        prove,
+        seal,
+        unseal,
+    )
 
+    if arguments.command == "id":
+        try:
+            print(file_id(arguments.input))
+        except CannotTrace as error:
+            print(str(error), file=sys.stderr)
+            return 3
+        return 0
     key = _key(arguments.key_file)
     if key is None:
         print("no key: pass --key-file or set TABCUSTODY_KEY", file=sys.stderr)
@@ -77,11 +128,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model = pickle.load(file)
             seal(model, arguments.output, key)
             print(f"sealed {arguments.model} -> {arguments.output}")
-        else:
+        elif arguments.command == "unseal":
             model = unseal(arguments.input, key)
             Path(arguments.output).write_bytes(pickle.dumps(model))
             print(f"unsealed {arguments.input} -> {arguments.output}")
-    except (CannotSeal, CannotUnseal) as error:
+        elif arguments.command == "prove":
+            proof = prove(arguments.input, key, arguments.position, arguments.table)
+            print(json.dumps(proof, indent=2))
+        else:
+            print(audit_key(key).hex())
+    except (CannotSeal, CannotUnseal, CannotTrace) as error:
         print(str(error), file=sys.stderr)
         return 3
     return 0

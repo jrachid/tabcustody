@@ -153,6 +153,26 @@ The sealed file is a zip of two members: `model.pkl`, the model pickled with a n
 
 The `seal` and `unseal` commands exit with 0 on success, 2 when no key is given, and 3 when a model cannot be sealed or a file cannot be opened with the key.
 
+## Trace: tie a past prediction to the exact rows behind it
+
+With an in-context model the training table is the model, so "which model made this prediction?" is the question "which rows did it read?". A sealed file answers it without showing the rows. Log the file's identifier beside each prediction; it is readable without the key, changes with the model or any single row, and stays the same when the same model is sealed again under the same key:
+
+```bash
+tabcustody id model.sealed                     # 3f9c…, log it with each prediction
+```
+
+Later, to show an auditor that a given row was in the table, without showing any other row, prove it with the sealing key and hand over the proof and the audit key, which checks proofs and decrypts nothing:
+
+```bash
+tabcustody prove model.sealed --position 42 --key-file key > proof.json
+tabcustody audit-key --key-file key > audit.key
+tabcustody check-proof proof.json --id 3f9c… --audit-key-file audit.key   # exits 0 if it holds
+```
+
+or from Python, with `file_id`, `prove`, `audit_key` and `verify_proof`. The auditor needs neither the sealing key nor the file: the proof carries the row, its target, the path up the Merkle tree and what the identifier is computed from, so a proof made for another file, a changed value or a moved row is refused. Unlike MLflow's dataset digest, an unkeyed MD5 of the first 10,000 rows that anyone holding the data can recompute, the commitment covers every row and confirms nothing without the key.
+
+The proof shows a row as the model keeps it: after a scaler in a pipeline, or in TabDPT, the normalised row; in TabPFN, each ensemble member's labels after its class permutation (0 and 1 swapped, for instance). Files sealed by 0.3 carry no commitment; seal them again to trace them.
+
 ## Guarantees and the tests that prove them
 
 | Guarantee | Test |
@@ -182,6 +202,9 @@ The `seal` and `unseal` commands exit with 0 on success, 2 when no key is given,
 | The manifest does not let a held dataset be confirmed without the key | `test_seal.py::test_the_manifest_does_not_confirm_a_known_table` |
 | Each training table's row commitment matches its rows, and does not confirm a held table without the key | `test_trace.py::test_sealing_commits_each_table_with_its_target_and_nothing_else`, `::test_the_root_does_not_confirm_a_known_table` |
 | A file sealed by 0.3 still unseals | `test_trace.py::test_a_version_one_file_still_unseals` |
+| A proof holds with the audit key and the logged identifier alone, and shows no other row | `test_trace.py::test_a_proof_holds_with_the_audit_key_and_the_logged_identifier_alone`, `::test_a_proof_shows_no_other_row` |
+| A proof for another file, a changed value or a moved row is refused | `test_trace.py::test_a_proof_for_another_file_or_a_changed_row_is_refused` |
+| The identifier changes with any row and stays when the same model is sealed again under the same key | `test_trace.py::test_resealing_under_the_same_key_keeps_the_identifier` |
 
 ## Limits
 
@@ -201,7 +224,7 @@ The `seal` and `unseal` commands exit with 0 on success, 2 when no key is given,
 1. **Detect** — shipped in 0.1.
 2. **Separate** — shipped in 0.3. `seal` and `unseal`, as the Python API and the `tabcustody seal`/`unseal` commands, move the training data under a key (see above).
 3. **Erase.** Find a person's rows, remove them, refit, and keep a record that proves it — an erasure request under GDPR article 17 becomes a routine operation with these models, where classic models would need retraining.
-4. **Trace and verify.** Know which exact table was in place for any past prediction, and check that production predicts like development.
+4. **Trace and verify.** Know which exact table was in place for any past prediction — the identifier and row proofs above, in 0.4 — and check that production predicts like development, which comes next.
 
 Each step ships on its own, with its guarantees backed by named tests.
 

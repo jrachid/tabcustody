@@ -92,3 +92,37 @@ def scan_carries(path) -> bool:
     from tabcustody import scan_file
 
     return scan_file(path).carries_training_data
+
+
+def test_a_logged_identifier_and_an_audit_key_check_a_proof_from_the_command_line(
+    tmp_path, capsys, monkeypatch
+):
+    import numpy as np
+
+    from tabcustody import seal
+
+    path = tmp_path / "model.sealed"
+    rows = np.arange(120, dtype=float).reshape(40, 3)
+    seal({"X": rows, "y": np.arange(40)}, path, b"k" * 32)
+    monkeypatch.setenv("TABCUSTODY_KEY", "k" * 32)
+
+    assert main(["id", str(path)]) == 0
+    logged = capsys.readouterr().out.strip()
+    assert main(["prove", str(path), "--position", "3"]) == 0
+    (tmp_path / "proof.json").write_text(capsys.readouterr().out)
+    assert main(["audit-key"]) == 0
+    (tmp_path / "audit").write_text(capsys.readouterr().out)
+
+    check = [
+        "check-proof",
+        str(tmp_path / "proof.json"),
+        "--audit-key-file",
+        str(tmp_path / "audit"),
+    ]
+    assert main([*check, "--id", logged]) == 0
+    assert main([*check, "--id", "0" * 64]) == 1
+
+
+def test_id_on_a_file_sealed_before_format_2_exits_with_three(capsys):
+    assert main(["id", str(FIXTURES / "sealed-format-1.zip")]) == 3
+    assert "format 2" in capsys.readouterr().err

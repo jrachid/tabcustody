@@ -151,7 +151,7 @@ def test_sealing_commits_each_table_with_its_target_and_nothing_else(tmp_path):
 
     expected = merkle_root(table_leaves(audit_key(KEY), X, y)).hex()
     assert fingerprints(path) == [
-        {"scheme": "rfc9162-hmac-sha256/1", "rows": ROWS, "root": expected}
+        {"scheme": "rfc9162-hmac-sha256/1", "rows": ROWS, "target_slot": 1, "root": expected}
     ]
 
 
@@ -274,3 +274,95 @@ def test_a_transformed_copy_beside_a_targeted_table_gets_no_root(tmp_path):
     assert [f["root"] for f in fingerprints(path)] == [
         merkle_root(table_leaves(audit_key(KEY), X, y)).hex()
     ]
+
+
+def sealed(tmp_path, key=KEY, name="model.sealed", model=None):
+    from tabcustody import seal
+
+    X, y = table()
+    path = tmp_path / name
+    seal({"X": X, "y": y} if model is None else model, path, key)
+    return path, X, y
+
+
+def test_resealing_under_the_same_key_keeps_the_identifier(tmp_path):
+    from tabcustody import file_id
+
+    ids = [
+        file_id(sealed(tmp_path, key, name)[0]) for name, key in zip("abc", (KEY, KEY, b"x" * 32))
+    ]
+    changed = {"X": table()[0].copy(), "y": table()[1]}
+    changed["X"][5, 1] += 1e-9
+
+    assert ids[0] == ids[1] != ids[2]
+    assert file_id(sealed(tmp_path, model=changed, name="d")[0]) != ids[0]
+
+
+def test_a_proof_holds_with_the_audit_key_and_the_logged_identifier_alone(tmp_path):
+    from tabcustody import audit_key, file_id, prove, verify_proof
+
+    path, X, y = sealed(tmp_path)
+    logged = file_id(path)
+
+    proof = prove(path, KEY, 123)
+    path.unlink()
+
+    assert verify_proof(proof, audit_key(KEY), logged)
+    assert proof["row_values"] == X[123].tolist() and proof["target_value"] == y[123]
+
+
+def test_a_proof_for_another_file_or_a_changed_row_is_refused(tmp_path):
+    import copy
+
+    from tabcustody import audit_key, file_id, prove, verify_proof
+
+    path, X, _ = sealed(tmp_path)
+    other = file_id(sealed(tmp_path, name="other", model={"X": X[::-1].copy(), "y": X[:, 0]})[0])
+    proof = prove(path, KEY, 7)
+    changed = copy.deepcopy(proof)
+    changed["row"]["hex"] = X[8].astype("<f8").tobytes().hex()
+    moved = {**proof, "position": 8}
+
+    assert not verify_proof(proof, audit_key(KEY), other)
+    assert not verify_proof(changed, audit_key(KEY), file_id(path))
+    assert not verify_proof(moved, audit_key(KEY), file_id(path))
+    assert not verify_proof({**proof, "table": -1}, audit_key(KEY), file_id(path))
+    assert not verify_proof({"roots": "junk"}, audit_key(KEY), file_id(path))
+
+
+def test_a_proof_shows_no_other_row(tmp_path):
+    import json
+
+    from tabcustody import prove
+
+    path, X, _ = sealed(tmp_path)
+
+    text = json.dumps(prove(path, KEY, 0))
+
+    leaked = [i for i in range(1, ROWS) if X[i].astype("<f8").tobytes().hex() in text]
+    leaked += [i for i in range(1, ROWS) if repr(float(X[i, 0])) in text]
+    assert leaked == []
+
+
+def test_a_version_one_file_has_no_identifier_and_no_proof():
+    import pytest
+
+    from tabcustody import CannotTrace, file_id, prove
+
+    with pytest.raises(CannotTrace, match="format 2"):
+        file_id(FIXTURES / "sealed-format-1.zip")
+    with pytest.raises(CannotTrace, match="format 2"):
+        prove(FIXTURES / "sealed-format-1.zip", b"\x01" * 32, 0)
+
+
+def test_proving_a_missing_row_or_table_is_refused(tmp_path):
+    import pytest
+
+    from tabcustody import CannotTrace, prove
+
+    path, _, _ = sealed(tmp_path)
+
+    with pytest.raises(CannotTrace, match="300 rows"):
+        prove(path, KEY, ROWS)
+    with pytest.raises(CannotTrace, match="1 committed table"):
+        prove(path, KEY, 0, table=1)
