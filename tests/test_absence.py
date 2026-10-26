@@ -23,6 +23,13 @@ def saved(tmp_path, model, name="model.pkl"):
     return path
 
 
+def large(name):
+    path = FIXTURES / "large" / name
+    if not path.exists():
+        pytest.skip(f"{path} is built by `tests/fixtures/build.py --large`")
+    return path
+
+
 def without(index):
     keep = np.arange(len(X)) != index
     return {"_fit_X": X[keep], "_y": Y[keep]}
@@ -124,7 +131,7 @@ def test_the_command_exits_by_what_it_could_show(tmp_path, capsys):
 
 @pytest.mark.integration
 def test_tabpfn_members_hold_the_rows_among_transformed_columns():
-    report = check_absent(FIXTURES / "large" / "tabpfn-v2.pkl", X[[ERASED]])
+    report = check_absent(large("tabpfn-v2.pkl"), X[[ERASED]])
 
     assert report.present == (0,)
     assert len(report.rows[0].tables) == 8
@@ -132,7 +139,7 @@ def test_tabpfn_members_hold_the_rows_among_transformed_columns():
 
 @pytest.mark.integration
 def test_check_never_claims_absence_from_an_unverified_cache():
-    report = check_absent(FIXTURES / "large" / "tabicl-kv-cache.pkl", X[[ERASED]])
+    report = check_absent(large("tabicl-kv-cache.pkl"), X[[ERASED]])
 
     assert not report.verified
     assert any("key-value cache" in place for place in report.unverifiable)
@@ -143,7 +150,7 @@ def test_check_never_claims_absence_from_an_unverified_cache():
 def test_a_person_at_a_column_end_may_survive_as_an_extreme_without_the_table():
     richest = int(np.argmax(X[:, 1]))
 
-    report = check_absent(FIXTURES / "large" / "tabicl-kv-cache.pkl", X[[richest]])
+    report = check_absent(large("tabicl-kv-cache.pkl"), X[[richest]])
 
     assert report.present == () and report.uncertain == (0,)
     assert report.rows[0].extremes == ("ensemble_generator_.preprocessors_['power']",)

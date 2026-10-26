@@ -183,6 +183,26 @@ tabcustody verify model.sealed --key-file key --tolerance 1e-6   # across machin
 
 The probes test reproducibility, not accuracy, so synthetic inputs are enough; probes and predictions are encrypted like the rows. Measured on TabICL 2.2.0 and TabPFN 9.0.0 on CPU: in a fresh process on the same machine, predictions come back identical to the bit; with PyTorch limited to one thread, which only changes the order of the sums, they move by 1.2e-7 and 6e-8. A tolerance of 0 therefore fails on such a change, which is exact but strict; across machines, start from 1e-6. GPU against CPU is not measured.
 
+## Erase: remove a person, and keep the proof
+
+An in-context model learns nothing from a row beyond keeping it, so removing the row and refitting gives exactly the model that never saw it, which machine-unlearning research cannot offer for a trained network. `tabcustody erase` does it on a sealed file, writes the new version sealed under a fresh key, checks that the rows are gone, and writes a receipt:
+
+```bash
+tabcustody erase model.sealed model-v2.sealed --rows person.csv --key-file key --new-key-file key-v2
+tabcustody check --absent person.csv model-v2.sealed --key-file key-v2   # exits 0 if absence is shown
+tabcustody check --revoked model.sealed --key-file key-v2               # exits 0 once the old key is gone
+```
+
+or from Python, with `erase_file`, or `erase` on a live model and `check_absent` on any file. The rows are the person's values, as passed to `fit`: a model's table has no identity column. They are never printed or written, not even in an error.
+
+**The training data is checked, never assumed.** It is read back from the model's own table, through its scaler if it has one, or taken from `--training-data` (an `.npz` with `X` and `y`), and a clone refitted on it must first predict bit for bit as the model, classes included, or nothing is erased. Measured with one customer erased, on the k-nearest-neighbours models, TabICL, TabPFN and TabDPT, cache modes included: the result predicts bit for bit as a model fitted from scratch without that customer. TabPFN's regressor keeps a transformed target and needs `--training-data`.
+
+**Absence is claimed only when it is shown.** `check --absent` looks for each row as a set of values in every training table, after reversing its scaler, and among the column extremes. It exits 0 when every row is absent, 1 when one is present, 2 when the file or the rows cannot be read, and 3 when nothing is found but absence is not shown: a key-value cache cannot be searched, so a file with one is never called free of the rows; there, the receipt says the cache was rebuilt without them by refitting. A column extreme equal to one of the person's values makes the row possibly present, unless a row still in the table explains it.
+
+**Old copies become unreadable when their key is destroyed.** Refitting changes the new version only; the old one, in git, buckets or with contractors, still holds the person, and side by side the two versions would point at them. `erase` therefore writes only sealed files, refuses a new key that opens the old version, and the receipt names the old version's key to destroy; `check --revoked` then shows that the remaining keys no longer open it. An old version that was never sealed cannot be revoked, and the receipt says so.
+
+**The receipt holds nothing of the erased rows**, neither values nor fingerprints, since a keyed fingerprint is still personal data: the identifiers of both versions, the number of rows removed and kept, where the training data came from, what the check could and could not show, and a tag under the new version's audit key, which `tabcustody check-receipt` or `verify_receipt` checks without the sealing key.
+
 ## Guarantees and the tests that prove them
 
 | Guarantee | Test |
@@ -217,6 +237,13 @@ The probes test reproducibility, not accuracy, so synthetic inputs are enough; p
 | The identifier changes with any row and stays when the same model is sealed again under the same key | `test_trace.py::test_resealing_under_the_same_key_keeps_the_identifier` |
 | `verify` says identical where the file was sealed, and reports the largest deviation and changed versions elsewhere | `test_trace.py::test_verify_says_identical_on_the_machine_that_sealed`, `::test_verify_reports_the_largest_deviation`, `::test_verify_lists_the_libraries_whose_version_changed` |
 | Probes and their predictions are sealed: a scan finds nothing, and changed probes are refused | `test_trace.py::test_the_scanner_finds_nothing_in_a_file_with_probes`, `::test_changed_probes_are_refused` |
+| An erased model predicts as one fitted from scratch without the rows | `test_erase.py::test_an_erased_model_predicts_as_one_fitted_without_the_rows` |
+| Training data that does not refit to the model is refused, and the model is left unchanged | `test_erase.py::test_data_that_does_not_refit_to_the_model_is_refused`, `::test_an_unknown_row_is_refused_and_nothing_changes` |
+| An erased row is absent and a kept row present, behind a scaler and in a float32 table too | `test_absence.py::test_a_kept_row_is_found_and_an_erased_one_is_absent`, `::test_a_row_behind_a_scaler_is_found_once_the_scaler_is_reversed`, `::test_a_float32_table_still_finds_the_rows_it_holds` |
+| Absence is never claimed from a cache, a too narrow table or a sealed file opened without its key | `test_absence.py::test_check_never_claims_absence_from_an_unverified_cache`, `::test_a_table_narrower_than_the_rows_leaves_absence_unshown`, `::test_a_sealed_file_is_searched_once_opened_with_its_key` |
+| No written file and no report holds the erased rows | `test_erase.py::test_no_written_file_holds_the_erased_rows`, `test_absence.py::test_the_report_holds_no_value_of_the_given_rows` |
+| The old version no longer opens once its key is gone, and a new key that opens it is refused | `test_absence.py::test_the_command_tells_whether_an_old_version_still_opens`, `test_erase.py::test_a_new_key_that_opens_the_old_version_is_refused_and_nothing_is_written` |
+| A changed receipt is refused | `test_erase.py::test_a_changed_receipt_is_refused` |
 
 ## Limits
 
@@ -228,6 +255,7 @@ The probes test reproducibility, not accuracy, so synthetic inputs are enough; p
 - **Caches.** The key-value caches of TabICL and of TabPFN 9.1.0 and later are reported, recognised by the names of their classes. A cache whose classes are not known is still reported when it holds PyTorch tensors with an axis equal to a training-row count the file records; one that keeps no such tensor, or whose row count the file does not record, is not. Whether TabPFN's rows can be rebuilt from its cache has not been measured.
 - **Column extremes** are recognised as `X_min_` and `X_max_` beside a scaler of the same width, as TabICL stores them. Others are not reported: those of MinMaxScaler (`data_min_`, `data_max_`), and those TabPFN v2 keeps in the first and last rows of a quantile grid.
 - **Seal** lifts what the scanner would report from a live model and nothing else: data the scanner does not recognise, such as a table under `--min-rows` or a cache of an unknown class without a per-row axis, stays in `model.pkl` in clear. Sealing loads the model, so it needs the model's libraries installed, unlike the scan.
+- **Erase** finds a person by their values, so two people with the same values in every column are one row to it, and both are removed. Recovering the training data from a model pickles it in memory (836 MB for TabPFN v3.5); refitting needs the model's libraries, and a refit that is not deterministic, without a fixed random state, cannot be shown exact. Copies of the data outside the model file (exports, warehouses, logs) are out of its reach.
 - **Formats.** Not read: lz4-compressed joblib, safetensors, ONNX, `torch.save` archives. PyTorch tensors inside a pickle stay opaque placeholders.
 - **Memory.** The object tree is read without the weights: the bytes of a PyTorch storage are skipped and replaced by a placeholder that keeps their length, so scanning the 836 MB TabPFN v3.5 pickle peaks at about 40 MB. A large table stored as a NumPy array is still read in full, since it is what the scanner looks for.
 
@@ -235,7 +263,7 @@ The probes test reproducibility, not accuracy, so synthetic inputs are enough; p
 
 1. **Detect** — shipped in 0.1.
 2. **Separate** — shipped in 0.3. `seal` and `unseal`, as the Python API and the `tabcustody seal`/`unseal` commands, move the training data under a key (see above).
-3. **Erase.** Find a person's rows, remove them, refit, and keep a record that proves it — an erasure request under GDPR article 17 becomes a routine operation with these models, where classic models would need retraining.
+3. **Erase** — shipped in 0.5. Find a person's rows, remove them, refit exactly, show they are gone, make old copies unreadable, and keep a receipt (see above).
 4. **Trace and verify** — shipped in 0.4. Know which exact table was in place for any past prediction, prove that a row was in it, and check that production predicts like development (see above).
 
 Each step ships on its own, with its guarantees backed by named tests.

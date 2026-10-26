@@ -1,4 +1,4 @@
-"""The `tabcustody` command: scan tells whether files carry training data (exit 1), seal and unseal move that data under a key, id, prove and check-proof tie a past prediction to the rows of a sealed file, verify checks that this environment predicts as the sealing one, check --absent tells whether given rows left a file."""
+"""The `tabcustody` command: scan tells whether files carry training data (exit 1), seal and unseal move that data under a key, id, prove and check-proof tie a past prediction to the rows of a sealed file, verify checks that this environment predicts as the sealing one, erase writes a version without given rows and check --absent tells whether they left a file."""
 
 from __future__ import annotations
 
@@ -46,6 +46,24 @@ def _parser() -> argparse.ArgumentParser:
     check.add_argument(
         "--min-rows", type=int, default=20, help="smallest table searched (default: 20)"
     )
+    erase = commands.add_parser(
+        "erase",
+        help="write a new sealed version without given rows, and a receipt that holds none of them",
+    )
+    erase.add_argument("old", help="current version: a sealed file, or a pickle (which is run)")
+    erase.add_argument("new", help="new sealed file to write")
+    erase.add_argument("--rows", required=True, help="CSV or .npy file of the rows to remove")
+    erase.add_argument(
+        "--new-key-file", required=True, help="fresh key for the new version, never the old one"
+    )
+    erase.add_argument(
+        "--key-file", action="append", help="key of the old version if sealed; repeat for a ring"
+    )
+    erase.add_argument(
+        "--training-data",
+        help=".npz file with arrays X and y, when the model's own table cannot be refitted",
+    )
+    erase.add_argument("--receipt", help="where to write the receipt (default: NEW.receipt.json)")
     seal = commands.add_parser(
         "seal",
         help="write a model file with its training data encrypted (loads, so runs, the model)",
@@ -109,6 +127,13 @@ def _parser() -> argparse.ArgumentParser:
     proof_check.add_argument(
         "--audit-key-file", required=True, help="file holding the hex audit key"
     )
+    receipt = commands.add_parser(
+        "check-receipt", help="tell whether an erasure receipt is unchanged (exit 1 if not)"
+    )
+    receipt.add_argument("receipt", help="JSON receipt written by `tabcustody erase`")
+    receipt.add_argument(
+        "--audit-key-file", required=True, help="file holding the new version's hex audit key"
+    )
     return parser
 
 
@@ -169,6 +194,60 @@ def _check(arguments: argparse.Namespace) -> int:
     return 0 if report.verified else 3
 
 
+def _erase(arguments: argparse.Namespace) -> int:
+    import numpy as np
+
+    from tabcustody._absence import read_rows
+    from tabcustody._erase import CannotErase, erase_file
+    from tabcustody._seal import CannotSeal, CannotUnseal
+
+    try:
+        rows = read_rows(arguments.rows)
+        new_key = Path(arguments.new_key_file).read_bytes()
+        X = y = None
+        if arguments.training_data:
+            with np.load(arguments.training_data, allow_pickle=False) as data:
+                X, y = data["X"], data["y"]
+    except (ValueError, OSError, KeyError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    try:
+        written = erase_file(
+            arguments.old,
+            arguments.new,
+            rows,
+            new_key,
+            old_keys=_keys(arguments.key_file),
+            X=X,
+            y=y,
+            receipt=arguments.receipt,
+        )
+    except (CannotErase, CannotSeal, CannotUnseal) as error:
+        print(str(error), file=sys.stderr)
+        return 3
+    check = written["check"]
+    shown = "shown" if check["verified"] else "not fully shown: " + "; ".join(check["not_checked"])
+    print(f"erased {written['removed']} training row(s) -> {arguments.new}")
+    print(f"absence from the new version: {shown}")
+    if check["caches"]:
+        print(f"caches: {check['caches']}")
+    print(f"old version: {written['old_version']}")
+    print(f"receipt: {arguments.receipt or str(arguments.new) + '.receipt.json'}")
+    return 0
+
+
+def _check_receipt(arguments: argparse.Namespace) -> int:
+    from tabcustody._erase import verify_receipt
+
+    written = json.loads(Path(arguments.receipt).read_text())
+    audit = bytes.fromhex(Path(arguments.audit_key_file).read_text().strip())
+    if verify_receipt(written, audit):
+        print(f"the receipt holds: {written['removed']} row(s) erased on {written['date']}")
+        return 0
+    print("the receipt does not hold for this audit key", file=sys.stderr)
+    return 1
+
+
 def _revoked(path: str, keys: list[bytes] | None) -> int:
     from tabcustody._seal import CannotUnseal, opens
 
@@ -193,6 +272,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _scan(arguments)
     if arguments.command == "check":
         return _check(arguments)
+    if arguments.command == "erase":
+        return _erase(arguments)
+    if arguments.command == "check-receipt":
+        return _check_receipt(arguments)
     if arguments.command == "check-proof":
         return _check_proof(arguments)
 

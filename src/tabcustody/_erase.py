@@ -2,16 +2,32 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import pickle
+import zipfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from tabcustody._absence import TOLERANCE, _tolerance
+from tabcustody._absence import TOLERANCE, _sealed, _tolerance, check_absent
 from tabcustody._detect import _walk, as_table, as_vector, find_tables
 from tabcustody._reader import read_bytes
 from tabcustody._reverse import reverse
+from tabcustody._seal import (
+    CannotTrace,
+    Keys,
+    _versions,
+    audit_key,
+    file_id,
+    opens,
+    seal,
+    unseal,
+)
 
 PROBES = 32
 
@@ -168,3 +184,99 @@ def erase(
         keep[found] = False
     refitted = _fit(model, X_data[keep], y_data[keep])
     return Erasure(refitted, int((~keep).sum()), int(keep.sum()), origin)
+
+
+_RECEIPT = "tabcustody-erasure/1"
+
+
+def _receipt_tag(audit: bytes, receipt: dict[str, Any]) -> str:
+    body = {name: value for name, value in receipt.items() if name != "mac"}
+    return hmac.new(audit, json.dumps(body, sort_keys=True).encode(), hashlib.sha256).hexdigest()
+
+
+def verify_receipt(receipt: dict[str, Any], audit_key: bytes) -> bool:
+    """Tells whether the receipt is the one tabcustody wrote, unchanged, with the audit key of the new version; it needs neither the sealing key nor the files."""
+    tag = receipt.get("mac")
+    return isinstance(tag, str) and hmac.compare_digest(_receipt_tag(audit_key, receipt), tag)
+
+
+def _manifest(path: str | Path) -> dict[str, Any]:
+    with zipfile.ZipFile(path) as archive:
+        manifest: dict[str, Any] = json.loads(archive.read("manifest.json"))
+    return manifest
+
+
+def _load(path: str | Path, keys: Keys | None) -> tuple[Any, dict[str, Any]]:
+    """Opens the old version: a sealed file with its keys, or a clear pickle, which runs it as `seal` does; returns the model and what the receipt says of that version."""
+    if _sealed(path):
+        if keys is None:
+            raise CannotErase("the old version is sealed; pass its key")
+        model = unseal(path, keys)
+        manifest = _manifest(path)
+        try:
+            identifier = file_id(path)
+        except CannotTrace:
+            identifier = None
+        return model, {"sealed": True, "id": identifier, "key_id": manifest.get("key_id")}
+    with open(path, "rb") as file:
+        model = pickle.load(file)
+    return model, {"sealed": False, "id": None, "key_id": None}
+
+
+def erase_file(
+    old: str | Path,
+    new: str | Path,
+    rows: np.ndarray,
+    new_key: bytes,
+    old_keys: Keys | None = None,
+    X: np.ndarray | None = None,
+    y: np.ndarray | None = None,
+    receipt: str | Path | None = None,
+    min_rows: int = 20,
+) -> dict[str, Any]:
+    """Writes a new version of the model without the given rows, sealed under `new_key`, checks that the rows are absent from it, and writes a receipt beside it that holds nothing of the rows; returns the receipt. Raises CannotErase, and writes nothing, if the rows cannot be removed or `new_key` still opens the old version."""
+    model, before = _load(old, old_keys)
+    if before["sealed"] and opens(old, new_key):
+        raise CannotErase("the new key opens the old version; seal the new one under a fresh key")
+    erasure = erase(model, rows, X, y, min_rows=min_rows)
+    old_probes = 0
+    if before["sealed"]:
+        manifest = _manifest(old)
+        old_probes = int(manifest.get("probes", {}).get("count", 0))
+    seal(erasure.model, new, new_key, min_rows=min_rows, probes=old_probes)
+    report = check_absent(new, rows, min_rows=min_rows, keys=new_key)
+    if report.present or report.error is not None:
+        Path(new).unlink()
+        raise CannotErase("the rows are still found in the new version; nothing was written")
+    caches = [place for place in report.unverifiable if "cache" in place]
+    written = {
+        "format": _RECEIPT,
+        "date": datetime.now(UTC).isoformat(timespec="seconds"),
+        "tabcustody": _versions()["tabcustody"],
+        "before": before,
+        "after": {
+            "id": file_id(new),
+            "key_id": _manifest(new)["key_id"],
+        },
+        "rows_given": len(np.atleast_2d(rows)),
+        "removed": erasure.removed,
+        "kept": erasure.kept,
+        "training_data": erasure.source,
+        "check": {
+            "absent_from_tables": not report.uncertain,
+            "verified": report.verified,
+            "not_checked": list(report.unverifiable),
+            "caches": "rebuilt without the rows by refitting" if caches else None,
+        },
+        "old_version": (
+            "destroy the key whose key_id is above to make every copy of the old version "
+            "unreadable; check it with tabcustody check --revoked"
+            if before["sealed"]
+            else "the old version was not sealed: its copies keep the rows in clear and no key "
+            "can make them unreadable; delete them"
+        ),
+    }
+    written["mac"] = _receipt_tag(audit_key(new_key), written)
+    target = Path(receipt) if receipt is not None else Path(f"{new}.receipt.json")
+    target.write_text(json.dumps(written, indent=2))
+    return written
