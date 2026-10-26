@@ -126,3 +126,18 @@ def test_a_logged_identifier_and_an_audit_key_check_a_proof_from_the_command_lin
 def test_id_on_a_file_sealed_before_format_2_exits_with_three(capsys):
     assert main(["id", str(FIXTURES / "sealed-format-1.zip")]) == 3
     assert "format 2" in capsys.readouterr().err
+
+
+def test_verify_exits_zero_on_the_machine_that_sealed(tmp_path, capsys, monkeypatch):
+    import pickle
+
+    from tabcustody._cli import main as run
+    from test_trace import Linear, table
+
+    model = tmp_path / "model.pkl"
+    model.write_bytes(pickle.dumps(Linear(*table())))
+    monkeypatch.setenv("TABCUSTODY_KEY", "k" * 32)
+
+    assert run(["seal", str(model), str(tmp_path / "m.sealed"), "--probes", "8"]) == 0
+    assert run(["verify", str(tmp_path / "m.sealed")]) == 0
+    assert "identically, to the bit, on 8 probes" in capsys.readouterr().out

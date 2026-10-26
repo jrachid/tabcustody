@@ -153,7 +153,7 @@ The sealed file is a zip of two members: `model.pkl`, the model pickled with a n
 
 The `seal` and `unseal` commands exit with 0 on success, 2 when no key is given, and 3 when a model cannot be sealed or a file cannot be opened with the key.
 
-## Trace: tie a past prediction to the exact rows behind it
+## Trace: tie a past prediction to the exact rows behind it, and check production
 
 With an in-context model the training table is the model, so "which model made this prediction?" is the question "which rows did it read?". A sealed file answers it without showing the rows. Log the file's identifier beside each prediction; it is readable without the key, changes with the model or any single row, and stays the same when the same model is sealed again under the same key:
 
@@ -172,6 +172,16 @@ tabcustody check-proof proof.json --id 3f9c… --audit-key-file audit.key   # ex
 or from Python, with `file_id`, `prove`, `audit_key` and `verify_proof`. The auditor needs neither the sealing key nor the file: the proof carries the row, its target, the path up the Merkle tree and what the identifier is computed from, so a proof made for another file, a changed value or a moved row is refused. Unlike MLflow's dataset digest, an unkeyed MD5 of the first 10,000 rows that anyone holding the data can recompute, the commitment covers every row and confirms nothing without the key.
 
 The proof shows a row as the model keeps it: after a scaler in a pipeline, or in TabDPT, the normalised row; in TabPFN, each ensemble member's labels after its class permutation (0 and 1 swapped, for instance). Files sealed by 0.3 carry no commitment; seal them again to trace them.
+
+To check that production predicts as development did, seal with probes: `seal` runs the model on probe inputs, midpoints between two training rows drawn with a fixed seed or inputs you pass, and seals them with its predictions. `verify` rebuilds the model where it runs, predicts again and reports the largest deviation and the library versions that changed:
+
+```bash
+tabcustody seal model.pkl model.sealed --key-file key --probes 32
+tabcustody verify model.sealed --key-file key                    # exits 0 only if identical to the bit
+tabcustody verify model.sealed --key-file key --tolerance 1e-6   # across machines
+```
+
+The probes test reproducibility, not accuracy, so synthetic inputs are enough; probes and predictions are encrypted like the rows. Measured on TabICL 2.2.0 and TabPFN 9.0.0 on CPU: in a fresh process on the same machine, predictions come back identical to the bit; with PyTorch limited to one thread, which only changes the order of the sums, they move by 1.2e-7 and 6e-8. A tolerance of 0 therefore fails on such a change, which is exact but strict; across machines, start from 1e-6. GPU against CPU is not measured.
 
 ## Guarantees and the tests that prove them
 
@@ -205,6 +215,8 @@ The proof shows a row as the model keeps it: after a scaler in a pipeline, or in
 | A proof holds with the audit key and the logged identifier alone, and shows no other row | `test_trace.py::test_a_proof_holds_with_the_audit_key_and_the_logged_identifier_alone`, `::test_a_proof_shows_no_other_row` |
 | A proof for another file, a changed value or a moved row is refused | `test_trace.py::test_a_proof_for_another_file_or_a_changed_row_is_refused` |
 | The identifier changes with any row and stays when the same model is sealed again under the same key | `test_trace.py::test_resealing_under_the_same_key_keeps_the_identifier` |
+| `verify` says identical where the file was sealed, and reports the largest deviation and changed versions elsewhere | `test_trace.py::test_verify_says_identical_on_the_machine_that_sealed`, `::test_verify_reports_the_largest_deviation`, `::test_verify_lists_the_libraries_whose_version_changed` |
+| Probes and their predictions are sealed: a scan finds nothing, and changed probes are refused | `test_trace.py::test_the_scanner_finds_nothing_in_a_file_with_probes`, `::test_changed_probes_are_refused` |
 
 ## Limits
 
@@ -224,7 +236,7 @@ The proof shows a row as the model keeps it: after a scaler in a pipeline, or in
 1. **Detect** — shipped in 0.1.
 2. **Separate** — shipped in 0.3. `seal` and `unseal`, as the Python API and the `tabcustody seal`/`unseal` commands, move the training data under a key (see above).
 3. **Erase.** Find a person's rows, remove them, refit, and keep a record that proves it — an erasure request under GDPR article 17 becomes a routine operation with these models, where classic models would need retraining.
-4. **Trace and verify.** Know which exact table was in place for any past prediction — the identifier and row proofs above, in 0.4 — and check that production predicts like development, which comes next.
+4. **Trace and verify** — shipped in 0.4. Know which exact table was in place for any past prediction, prove that a row was in it, and check that production predicts like development (see above).
 
 Each step ships on its own, with its guarantees backed by named tests.
 

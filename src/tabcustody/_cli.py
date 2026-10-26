@@ -1,4 +1,4 @@
-"""The `tabcustody` command: scan tells whether files carry training data (exit 1), seal and unseal move that data under a key, id, prove and check-proof tie a past prediction to the rows of a sealed file."""
+"""The `tabcustody` command: scan tells whether files carry training data (exit 1), seal and unseal move that data under a key, id, prove and check-proof tie a past prediction to the rows of a sealed file, verify checks that this environment predicts as the sealing one."""
 
 from __future__ import annotations
 
@@ -29,6 +29,12 @@ def _parser() -> argparse.ArgumentParser:
     seal.add_argument("model", help="pickle of the fitted model to seal")
     seal.add_argument("output", help="sealed file to write")
     seal.add_argument("--key-file", help="file whose bytes are the key; else TABCUSTODY_KEY")
+    seal.add_argument(
+        "--probes",
+        type=int,
+        default=0,
+        help="run the model on this many probe inputs and seal its predictions, for verify",
+    )
     unseal = commands.add_parser("unseal", help="rebuild a sealed model, given its key")
     unseal.add_argument("input", help="sealed file")
     unseal.add_argument("output", help="pickle of the rebuilt model to write")
@@ -48,6 +54,15 @@ def _parser() -> argparse.ArgumentParser:
         "audit-key", help="print, in hex, the key that checks proofs and decrypts nothing"
     )
     audit.add_argument("--key-file", help="file whose bytes are the key; else TABCUSTODY_KEY")
+    verify = commands.add_parser(
+        "verify",
+        help="tell whether this environment predicts as the one that sealed the file (exit 1 if not)",
+    )
+    verify.add_argument("input", help="sealed file, sealed with --probes")
+    verify.add_argument(
+        "--tolerance", type=float, default=0.0, help="largest deviation accepted (default: 0)"
+    )
+    verify.add_argument("--key-file", help="file whose bytes are the key; else TABCUSTODY_KEY")
     check = commands.add_parser(
         "check-proof", help="tell whether a proof holds for a logged identifier (exit 1 if not)"
     )
@@ -108,6 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prove,
         seal,
         unseal,
+        verify,
     )
 
     if arguments.command == "id":
@@ -126,7 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             # Loading runs the model's own pickle; it is the user's file, the same trust `unseal` takes.
             with open(arguments.model, "rb") as file:
                 model = pickle.load(file)
-            seal(model, arguments.output, key)
+            seal(model, arguments.output, key, probes=arguments.probes)
             print(f"sealed {arguments.model} -> {arguments.output}")
         elif arguments.command == "unseal":
             model = unseal(arguments.input, key)
@@ -135,6 +151,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.command == "prove":
             proof = prove(arguments.input, key, arguments.position, arguments.table)
             print(json.dumps(proof, indent=2))
+        elif arguments.command == "verify":
+            result = verify(arguments.input, key, arguments.tolerance)
+            print(result.to_text())
+            return 0 if result.holds else 1
         else:
             print(audit_key(key).hex())
     except (CannotSeal, CannotUnseal, CannotTrace) as error:

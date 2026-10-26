@@ -12,6 +12,7 @@ import platform
 import sys
 import warnings
 import zipfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -291,12 +292,48 @@ def _file_tag(mac_key: bytes, model_bytes: bytes, manifest: dict[str, Any]) -> s
     return _hmac(mac_key, model_bytes + json.dumps(body, sort_keys=True).encode())
 
 
-def seal(model: Any, path: str | Path, key: bytes, min_rows: int = MIN_ROWS) -> None:
-    """Writes a model file whose training data is encrypted with `key`: reloaded with the key by `unseal`, the model predicts exactly as before; without it, `tabcustody scan` finds neither a training table nor a cache. Raises CannotSeal if some training data cannot be reached."""
+def _predict(model: Any, inputs: np.ndarray) -> np.ndarray:
+    method = getattr(model, "predict_proba", None) or getattr(model, "predict", None)
+    if method is None:
+        raise CannotSeal("probes need a model with predict_proba or predict")
+    return np.asarray(method(inputs))
+
+
+def _probe_inputs(model: Any, probes: int | np.ndarray, min_rows: int) -> np.ndarray:
+    """Returns the probe inputs: the given array, or that many midpoints between two rows of the first training table, drawn with a fixed seed."""
+    if not isinstance(probes, int):
+        return np.asarray(probes)
+    tables = training_tables(model, min_rows)
+    if not tables:
+        raise CannotSeal("no training table to draw probes from; pass the probe inputs")
+    table = tables[0][0]
+    width = getattr(model, "n_features_in_", table.shape[1])
+    if table.shape[1] != width:
+        raise CannotSeal(
+            f"the table is {table.shape[1]} columns wide, the model takes {width}; "
+            "pass the probe inputs"
+        )
+    rng = np.random.default_rng(0)
+    first, second = rng.integers(0, len(table), probes), rng.integers(0, len(table), probes)
+    return np.asarray((table[first] + table[second]) / 2, dtype=float)
+
+
+def seal(
+    model: Any,
+    path: str | Path,
+    key: bytes,
+    min_rows: int = MIN_ROWS,
+    probes: int | np.ndarray = 0,
+) -> None:
+    """Writes a model file whose training data is encrypted with `key`: reloaded with the key by `unseal`, the model predicts exactly as before; without it, `tabcustody scan` finds neither a training table nor a cache; with `probes`, a count or an array of inputs, the model is run on them and they are sealed with its predictions, for `verify`. Raises CannotSeal if some training data cannot be reached."""
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     model_bytes, lifted = lift(model, min_rows)
     fingerprints = _table_fingerprints(model, lifted, key, min_rows)
+    checks = None
+    if not isinstance(probes, int) or probes > 0:
+        inputs = _probe_inputs(model, probes, min_rows)
+        checks = {"inputs": inputs, "outputs": _predict(model, inputs)}
     salt = os.urandom(16)
     enc_key, fp_key, commitment, key_id, mac_key = _derive(key, salt)
     cipher = AESGCM(enc_key)
@@ -324,6 +361,14 @@ def seal(model: Any, path: str | Path, key: bytes, min_rows: int = MIN_ROWS) -> 
         "versions": _versions(),
         "objects": objects,
     }
+    if checks is not None:
+        nonce = os.urandom(12)
+        blob = pickle.dumps(checks, protocol=pickle.DEFAULT_PROTOCOL)
+        manifest["probes"] = {
+            "count": len(checks["inputs"]),
+            "nonce": nonce.hex(),
+            "ciphertext": base64.b64encode(cipher.encrypt(nonce, blob, b"probes")).decode(),
+        }
     manifest["mac"] = _file_tag(mac_key, model_bytes, manifest)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("model.pkl", model_bytes)
@@ -336,6 +381,69 @@ def unseal(path: str | Path, key: bytes) -> Any:
     model = restore(model_bytes, lifted)
     _warn_on_other_versions(manifest.get("versions", {}))
     return model
+
+
+@dataclass
+class Verification:
+    """What `verify` measured: whether the probes came back bit for bit, the largest deviation, and which library versions differ from the sealing ones."""
+
+    probes: int
+    identical: bool
+    largest_deviation: float
+    tolerance: float
+    versions_changed: list[str] = field(default_factory=list)
+
+    @property
+    def holds(self) -> bool:
+        return self.identical or self.largest_deviation <= self.tolerance
+
+    def to_text(self) -> str:
+        if self.identical:
+            line = f"predicts identically, to the bit, on {self.probes} probes"
+        else:
+            verdict = "within" if self.holds else "beyond"
+            line = (
+                f"largest deviation {self.largest_deviation:.3g} on {self.probes} probes, "
+                f"{verdict} the tolerance of {self.tolerance:g}"
+            )
+        if self.versions_changed:
+            line += "\nversions changed since sealing: " + ", ".join(self.versions_changed)
+        return line
+
+
+def _deviation(sealed: np.ndarray, now: np.ndarray) -> float:
+    if sealed.shape != now.shape:
+        return float("inf")
+    if sealed.dtype.kind in "biuf" and now.dtype.kind in "biuf":
+        return float(np.max(np.abs(sealed.astype(float) - now.astype(float)), initial=0.0))
+    return 0.0 if np.array_equal(sealed, now) else float("inf")
+
+
+def verify(path: str | Path, key: bytes, tolerance: float = 0.0) -> Verification:
+    """Rebuilds the sealed model here, runs it on the probes sealed with it, and reports how far its predictions moved; raises CannotTrace if the file was sealed without probes."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    manifest, model_bytes, lifted = _open(path, key)
+    if "probes" not in manifest:
+        raise CannotTrace("this file was sealed without probes; seal it again with probes")
+    enc_key = _derive(key, bytes.fromhex(manifest["salt"]))[0]
+    sealed = manifest["probes"]
+    blob = AESGCM(enc_key).decrypt(
+        bytes.fromhex(sealed["nonce"]), base64.b64decode(sealed["ciphertext"]), b"probes"
+    )
+    checks = pickle.loads(blob)
+    model = restore(model_bytes, lifted)
+    now = _predict(model, checks["inputs"])
+    expected = np.asarray(checks["outputs"])
+    return Verification(
+        probes=len(checks["inputs"]),
+        identical=expected.shape == now.shape
+        and expected.dtype == now.dtype
+        and expected.tobytes() == now.tobytes(),
+        largest_deviation=_deviation(expected, now),
+        tolerance=tolerance,
+        versions_changed=_changed_versions(manifest.get("versions", {})),
+    )
 
 
 def _open(
@@ -436,13 +544,17 @@ def prove(path: str | Path, key: bytes, position: int, table: int = 0) -> dict[s
     }
 
 
-def _warn_on_other_versions(sealed: dict[str, str]) -> None:
+def _changed_versions(sealed: dict[str, str]) -> list[str]:
     now = _versions()
-    changed = [
+    return [
         f"{name} {sealed[name]} -> {now[name]}"
         for name in sealed
         if name in now and name not in ("python", "tabcustody") and now[name] != sealed[name]
     ]
+
+
+def _warn_on_other_versions(sealed: dict[str, str]) -> None:
+    changed = _changed_versions(sealed)
     if changed:
         warnings.warn(
             "this model was sealed with other library versions and may predict differently: "

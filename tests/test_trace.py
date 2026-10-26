@@ -366,3 +366,106 @@ def test_proving_a_missing_row_or_table_is_refused(tmp_path):
         prove(path, KEY, ROWS)
     with pytest.raises(CannotTrace, match="1 committed table"):
         prove(path, KEY, 0, table=1)
+
+
+class Linear:
+    def __init__(self, X, y):
+        self._fit_X, self._y = X, y
+        self.n_features_in_ = X.shape[1]
+        self.shift = 0.0
+
+    def predict(self, inputs):
+        return inputs @ self._fit_X.mean(axis=0) + self.shift
+
+
+def probed(tmp_path, probes=32):
+    from tabcustody import seal
+
+    X, y = table()
+    path = tmp_path / "probed.sealed"
+    seal(Linear(X, y), path, KEY, probes=probes)
+    return path, X
+
+
+def test_verify_says_identical_on_the_machine_that_sealed(tmp_path):
+    from tabcustody import verify
+
+    result = verify(probed(tmp_path)[0], KEY)
+
+    assert result.identical and result.holds and result.probes == 32
+    assert result.largest_deviation == 0.0 and result.versions_changed == []
+
+
+def test_verify_reports_the_largest_deviation(tmp_path, monkeypatch):
+    from tabcustody import verify
+
+    path, _ = probed(tmp_path)
+    monkeypatch.setattr(Linear, "predict", lambda self, x: x @ self._fit_X.mean(axis=0) + 1e-3)
+
+    strict, loose = verify(path, KEY), verify(path, KEY, tolerance=1e-2)
+
+    assert not strict.identical and not strict.holds
+    assert abs(strict.largest_deviation - 1e-3) < 1e-12
+    assert loose.holds and "within" in loose.to_text()
+
+
+def test_verify_lists_the_libraries_whose_version_changed(tmp_path, monkeypatch):
+    from tabcustody import _seal, verify
+
+    path, _ = probed(tmp_path)
+    recorded = sealed_manifest(path)["versions"]
+    monkeypatch.setattr(_seal, "_versions", lambda: {**recorded, "numpy": "0.0.1"})
+
+    result = verify(path, KEY)
+
+    assert result.versions_changed == [f"numpy {recorded['numpy']} -> 0.0.1"]
+
+
+def test_given_probe_inputs_are_the_ones_verified(tmp_path):
+    from tabcustody import verify
+
+    result = verify(probed(tmp_path, probes=np.eye(3))[0], KEY)
+
+    assert result.probes == 3 and result.identical
+
+
+def test_a_file_sealed_without_probes_cannot_be_verified(tmp_path):
+    import pytest
+
+    from tabcustody import CannotTrace, verify
+
+    path, _, _ = sealed(tmp_path)
+
+    with pytest.raises(CannotTrace, match="without probes"):
+        verify(path, KEY)
+
+
+def test_the_scanner_finds_nothing_in_a_file_with_probes(tmp_path):
+    from tabcustody import scan_file
+
+    path, X = probed(tmp_path)
+    blob = path.read_bytes()
+
+    assert not scan_file(path).carries_training_data
+    assert X[0].tobytes() not in blob and "probes" in sealed_manifest(path)
+
+
+def test_changed_probes_are_refused(tmp_path):
+    import json
+    import zipfile
+
+    import pytest
+
+    from tabcustody import CannotUnseal, verify
+
+    path, _ = probed(tmp_path)
+    with zipfile.ZipFile(path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        model_bytes = archive.read("model.pkl")
+    manifest["probes"]["count"] = 1
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("model.pkl", model_bytes)
+        archive.writestr("manifest.json", json.dumps(manifest))
+
+    with pytest.raises(CannotUnseal, match="changed"):
+        verify(path, KEY)

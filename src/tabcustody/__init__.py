@@ -6,11 +6,13 @@ from tabcustody._seal import (
     CannotSeal,
     CannotTrace,
     CannotUnseal,
+    Verification,
     audit_key,
     file_id,
     prove,
     seal,
     unseal,
+    verify,
 )
 from tabcustody._trace import verify_proof
 
@@ -20,11 +22,13 @@ __all__ = [
     "CannotUnseal",
     "Finding",
     "Report",
+    "Verification",
     "audit_key",
     "file_id",
     "prove",
     "scan_file",
     "seal",
     "unseal",
+    "verify",
     "verify_proof",
 ]
